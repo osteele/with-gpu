@@ -47,7 +47,12 @@ src/
 ### Making Changes
 
 1. Edit source files in `src/`
-2. Run `just all-checks` to verify code quality
+2. Run quality checks:
+   ```bash
+   cargo fmt --check  # Check formatting
+   cargo clippy -- -D warnings  # Lint
+   cargo check  # Type check
+   ```
 3. Test locally if you have NVML/CUDA (or test on cool30 after sync)
 4. Commit changes with git
 
@@ -56,7 +61,7 @@ src/
 When adding features:
 - Keep CLI interface simple and composable
 - Preserve backward compatibility (existing flags work as before)
-- Add tests in justfile for new functionality
+- Test thoroughly with actual GPU workloads
 - Update README.md with user-facing examples
 - Update this document with design decisions
 
@@ -67,15 +72,18 @@ Enforced by cargo tooling:
 - **cargo clippy**: Linting (with `-D warnings` to fail on warnings)
 - **cargo check**: Type checking and compilation
 
-Run all checks with: `just all-checks`
+Run all checks:
+```bash
+cargo fmt --check && cargo clippy -- -D warnings && cargo check
+```
 
 ## Testing
 
 ### Local Testing (macOS without NVML)
 
 Most functionality can't be tested on macOS since there's no NVML. You can:
-- Build the binary: `just build`
-- Check code quality: `just all-checks`
+- Build the binary: `cargo build --release`
+- Check code quality: `cargo fmt --check && cargo clippy -- -D warnings && cargo check`
 
 ### Testing on cool30
 
@@ -84,7 +92,7 @@ After mutagen sync, test on cool30:
 ```bash
 ssh cool30
 cd ~/code/research/with-gpu
-just install
+cargo install --path .
 
 # Test status display
 with-gpu --status
@@ -99,8 +107,7 @@ with-gpu --gpu 1 echo "Using GPU 1"
 with-gpu --wait --timeout 10 echo "Wait test"
 
 # Test with actual training
-cd ~/code/research/linebreak-transformer
-with-gpu just train-tc tiny
+with-gpu python train.py
 ```
 
 ## Style Guidelines
@@ -132,7 +139,7 @@ with-gpu just train-tc tiny
 
 ```bash
 cd ~/code/research/with-gpu
-just install
+cargo install --path .
 ```
 
 Installs binary to `~/.cargo/bin/with-gpu` (ensure `~/.cargo/bin` is in PATH).
@@ -140,8 +147,11 @@ Installs binary to `~/.cargo/bin/with-gpu` (ensure `~/.cargo/bin` is in PATH).
 ### Updating After Changes
 
 ```bash
-just all-checks  # Verify code quality
-just install     # Reinstall to ~/.cargo/bin
+# Verify code quality
+cargo fmt --check && cargo clippy -- -D warnings && cargo check
+
+# Reinstall to ~/.cargo/bin
+cargo install --path .
 ```
 
 ### Checking GPU Status
@@ -157,9 +167,14 @@ Shows all GPUs with memory usage, utilization, and process counts.
 Local testing commands (if you have NVML/CUDA):
 
 ```bash
-just status          # Show GPU status via with-gpu
-just test-echo       # Test with simple echo command
-just test-manual 0   # Test manual GPU selection
+# Show GPU status
+cargo run -- --status
+
+# Test with simple command
+cargo run -- echo "Testing with-gpu wrapper"
+
+# Test manual GPU selection
+cargo run -- --gpu 0 echo "Using GPU 0"
 ```
 
 For comprehensive testing on machines with actual GPUs, use cool30 (see Testing section above).
