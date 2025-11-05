@@ -1,0 +1,16 @@
+[package]
+name = "with-gpu"
+version = "0.1.0"
+edition = "2021"
+authors = ["Oliver Steele <steele@osteele.com>"]
+description = "Intelligent GPU selection wrapper for CUDA commands"
+license = "MIT"
+
+[[bin]]
+name = "with-gpu"
+path = "src/main.rs"
+
+[dependencies]
+clap = { version = "4.5", features = ["derive"] }
+anyhow = "1.0"
+nvml-wrapper = "0.10"
