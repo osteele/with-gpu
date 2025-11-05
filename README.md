@@ -4,21 +4,23 @@ Intelligent GPU selection wrapper for CUDA commands. Automatically finds idle GP
 
 ## Features
 
-- **Auto-select idle GPUs**: Prefers GPUs with no running processes
-- **Fallback to least-used**: If no idle GPUs, selects GPU with least memory usage
-- **Multi-GPU support**: Request minimum and maximum number of GPUs
-- **Manual selection**: Specify exact GPU IDs when needed
-- **Status display**: View all GPUs and their current usage
-- **Warning messages**: Get notified when using non-idle GPUs
+- 🎯 **Auto-select idle GPUs**: Prefers GPUs with no running processes
+- 🔄 **Fallback to least-used**: If no idle GPUs, selects GPU with least memory usage
+- 🖥️ **Multi-GPU support**: Request minimum and maximum number of GPUs
+- 🎛️ **Manual selection**: Specify exact GPU IDs when needed
+- ⏱️ **Wait capability**: Poll for GPU availability with configurable timeout
+- 📊 **Status display**: View all GPUs and their current usage
+- ⚠️ **Warning messages**: Get notified when using non-idle GPUs
 
 ## Installation
 
 ```bash
-cd ~/code/research/with-gpu
-just install
+git clone https://github.com/osteele/with-gpu.git
+cd with-gpu
+cargo install --path .
 ```
 
-This installs `with-gpu` to `~/.cargo/bin/with-gpu`.
+This installs `with-gpu` to `~/.cargo/bin/with-gpu` (ensure `~/.cargo/bin` is in your PATH).
 
 ## Usage
 
@@ -28,7 +30,6 @@ Find one idle GPU (or least-used if none idle):
 
 ```bash
 with-gpu python train.py
-with-gpu just train-tc tiny
 ```
 
 ### Manual GPU Selection
@@ -121,16 +122,14 @@ Available GPUs:
 
 ## Examples
 
-### Training on a GPU Server
+### Training Workflows
 
 ```bash
-# Auto-select one GPU (avoid the busy GPU 0)
-ssh gpu-server
-cd ~/code/research/linebreak-transformer
-with-gpu just train-tc tiny
+# Auto-select one GPU (avoid busy GPUs)
+with-gpu python train.py
 
 # Force use of GPU 1
-with-gpu --gpu 1 just train-tc tiny
+with-gpu --gpu 1 python train.py
 
 # Use 2 GPUs for distributed training
 with-gpu --min-gpus 2 --max-gpus 2 torchrun --nproc_per_node=2 train.py
@@ -155,84 +154,47 @@ with-gpu --max-gpus 8 python distributed_train.py
 
 Works with any command that respects `CUDA_VISIBLE_DEVICES`:
 
-- PyTorch training scripts
-- `just` recipes
-- `torchrun` for distributed training
-- TensorFlow scripts
+- **PyTorch** / **TensorFlow** training scripts
+- **torchrun** for distributed training
 - Any CUDA application
+- **uv** / **conda** Python environments that run any of the above commands
+- **just** / **make** build recipes that run any of the above commands
 
 ## Related Tools
 
-### Simple Shell Utilities
+**`idlegpu`** - Simple shell utility returning idle GPU ID. No multi-GPU, fallback, or wait support.
 
-**`idlegpu`** (used at some HPC clusters) - Returns the device number of an idle GPU
-- **Pros**: Extremely simple, minimal overhead
-- **Cons**: No multi-GPU support, no fallback logic, no waiting, requires manual scripting
-- **Usage**: `` CUDA_VISIBLE_DEVICES=`idlegpu` python train.py ``
+**`gpustat`** / **`nvitop`** - Monitoring tools with rich status displays. Monitoring only, no command execution.
 
-### Python Monitoring Tools
+**SLURM** / **Kubernetes** - Enterprise job schedulers. Feature-rich but heavyweight, complex setup.
 
-**`gpustat`** - Popular CLI tool for monitoring GPU status
-- **Pros**: Beautiful output, widely used, integrates with watch/tmux
-- **Cons**: Monitoring only, doesn't execute commands, requires Python
-- **Usage**: `gpustat` (view status), `gpustat --watch` (continuous monitoring)
+### Why `with-gpu`?
 
-**`nvitop`** - Enhanced monitoring tool with process information
-- **Pros**: Rich process details, interactive UI
-- **Cons**: Monitoring only, no automatic selection or execution
+Fills the gap between simple utilities and full schedulers:
+- ✅ Executes commands (not just monitoring)
+- ✅ Intelligent fallback (idle → least-used)
+- ✅ Wait capability with timeout
+- ✅ Multi-GPU min/max support
+- ✅ Lightweight (single Rust binary)
+- ✅ Direct NVML queries (reliable)
 
-### Job Schedulers
-
-**SLURM**, **Kubernetes** - Full cluster job schedulers
-- **Pros**: Enterprise-grade, multi-user, sophisticated policies, queue management
-- **Cons**: Heavyweight setup, overkill for individual workstations, complex configuration
-- **Usage**: `sbatch --gres=gpu:2 job.sh` (SLURM)
-
-### What Makes `with-gpu` Different
-
-`with-gpu` fills the gap between simple utilities and heavyweight schedulers:
-
-1. **Automatic execution wrapper** - Monitors GPUs AND runs your command (not just monitoring)
-2. **Intelligent fallback** - Uses idle GPUs first, falls back to least-used if needed
-3. **Wait capability** - Polls for GPU availability with configurable timeout (new feature)
-4. **Multi-GPU aware** - Handles min/max GPU requirements intelligently
-5. **Lightweight** - Single Rust binary, no Python runtime, no cluster infrastructure
-6. **Process replacement** - Uses `exec()` to replace wrapper (preserves stdio, signal handling)
-7. **NVML direct** - Queries GPU driver library directly (more reliable than parsing nvidia-smi)
-
-**Best for**: Individual GPU workstations, small research groups, interactive development where you want "just run this on an idle GPU" without setup overhead.
+**Best for**: Individual workstations, small research groups, "just run this on an idle GPU" workflows.
 
 ## Limitations
 
-### Race Conditions
+- ❌ Multiple processes may select same GPU simultaneously
+- ❌ GPU memory allocation delay creates race condition window
+- ❌ Intermittent GPU usage may appear as idle
+- ❌ No queue management or FIFO ordering
+- ❌ No priority system for waiting processes
+- ❌ No resource reservation or advance scheduling
+- ❌ Not suitable for environments requiring fairness guarantees
 
-**Multiple processes selecting simultaneously**: If multiple `with-gpu` processes run at the same time, they may select the same GPU before either has started using it. The OS scheduler determines which waiting process runs next (no FIFO guarantees).
+**Mitigation**: Use `--require-idle`, `--wait`, or stagger launches. See [docs/limitations.md](docs/limitations.md) for detailed discussion.
 
-**GPU acquisition delay**: Programs may take time to allocate GPU memory after starting. During this window, another `with-gpu` process might see the GPU as idle and select it.
+**When you need more**: For guaranteed fair scheduling, priority queues, or resource reservations, use SLURM or Kubernetes.
 
-**Intermittent GPU usage**: Programs that release GPU memory between execution phases may appear idle when they're not. The tool can't distinguish between "done" and "between phases."
-
-**Mitigation strategies**:
-- Use `--require-idle` to be more conservative
-- Use `--wait` to reduce simultaneous selection attempts
-- Stagger experiment launches by a few seconds
-- **Future enhancement**: Optional lockfile (`--lockfile`) to serialize GPU selection
-
-### Fairness and Priority
-
-`with-gpu` provides **no fairness guarantees**:
-- No queue management or FIFO ordering
-- No priority system
-- Waiting processes compete via OS scheduler (effectively random)
-- No resource reservation or advance scheduling
-
-**When you need fairness**: If you need guaranteed fair scheduling, priority queues, or resource reservations, you've outgrown this tool and should use a proper workload manager like SLURM, which provides:
-- Job queues with priority policies
-- Resource reservations and backfill scheduling
-- Fair-share scheduling across users
-- Quality-of-service guarantees
-
-`with-gpu` is designed for **cooperative** environments (small research groups, personal workstations) where lightweight "find me an idle GPU" is sufficient.
+Designed for **cooperative environments** (small groups, personal workstations) where "find me an idle GPU" is sufficient.
 
 ## Requirements
 
@@ -246,16 +208,9 @@ Works with any command that respects `CUDA_VISIBLE_DEVICES`:
 See [DEVELOPMENT.md](DEVELOPMENT.md) for comprehensive development documentation including:
 - Architecture and design decisions
 - Development workflow and code quality standards
-- Testing procedures (local and on cool30)
+- Testing procedures
 - Style guidelines
 - Troubleshooting common issues
-
-Quick start:
-```bash
-cd ~/code/research/with-gpu
-just all-checks  # Run all quality checks
-just install     # Install to ~/.cargo/bin
-```
 
 ## License
 
