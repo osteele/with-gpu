@@ -1,16 +1,17 @@
 # with-gpu
 
-Intelligent GPU selection wrapper for CUDA commands. Automatically finds idle GPUs or allows manual selection, then sets `CUDA_VISIBLE_DEVICES` and executes your command.
+Intelligent GPU selection wrapper for CUDA commands. Automatically selects GPUs with the most available memory, then sets `CUDA_VISIBLE_DEVICES` and executes your command.
 
 ## Features
 
-- 🎯 **Auto-select idle GPUs**: Prefers GPUs with no running processes
-- 🔄 **Fallback to least-used**: If no idle GPUs, selects GPU with least memory usage
+- 🧠 **Memory-first selection**: Prioritizes GPUs with most available VRAM (prevents OOM errors)
+- 🎯 **Smart fallback**: Uses non-idle GPUs with free memory when no idle GPUs available
 - 🖥️ **Multi-GPU support**: Request minimum and maximum number of GPUs
 - 🎛️ **Manual selection**: Specify exact GPU IDs when needed
 - ⏱️ **Wait capability**: Poll for GPU availability with configurable timeout
 - 📊 **Status display**: View all GPUs and their current usage
 - ⚠️ **Warning messages**: Get notified when using non-idle GPUs
+- 🍎 **Cross-platform**: Works on Linux (with NVIDIA GPUs) and macOS (no-op mode)
 
 ## Installation
 
@@ -26,11 +27,13 @@ This installs `with-gpu` to `~/.cargo/bin/with-gpu` (ensure `~/.cargo/bin` is in
 
 ### Basic Usage (Auto-select)
 
-Find one idle GPU (or least-used if none idle):
+Select the GPU with most available memory:
 
 ```bash
 with-gpu python train.py
 ```
+
+This prioritizes available VRAM over idle status, preventing OOM errors.
 
 ### Manual GPU Selection
 
@@ -62,7 +65,7 @@ with-gpu --min-gpus 2 --max-gpus 4 python train.py
 
 ### Require Idle GPUs
 
-Fail if no completely idle GPUs available:
+Enforce idle-only selection (no non-idle GPUs even if they have more free memory):
 
 ```bash
 # Single idle GPU required
@@ -71,6 +74,8 @@ with-gpu --require-idle python train.py
 # Multiple idle GPUs required
 with-gpu --min-gpus 2 --require-idle python train.py
 ```
+
+**Note**: Without `--require-idle`, the tool selects GPUs by available memory regardless of idle status. Use this flag when you specifically need GPUs with 0 running processes.
 
 ### Wait for GPUs
 
@@ -108,30 +113,35 @@ Available GPUs:
   GPU 2: USED - 5920/24268 MB (24.4%), 12 util, 1 processes
 ```
 
+In this example, auto-selection would pick GPU 1 (24 GB free), then GPU 2 (18 GB free), then GPU 0 (9 GB free).
+
 ## How It Works
 
-1. Queries NVIDIA GPUs via NVML library for memory, utilization, and running processes
-2. Classifies GPUs as **idle** (0 processes) or **used** (1+ processes)
-3. Selects GPUs based on criteria:
-   - Prefer idle GPUs up to `--max-gpus`
-   - If not enough idle, add least-used GPUs
-   - Warn when using non-idle GPUs
-   - Fail if `< --min-gpus` available or `--require-idle` not satisfied
-4. Sets `CUDA_VISIBLE_DEVICES` environment variable
-5. Executes your command
+1. **Queries GPUs**: Uses NVML library to get memory usage, utilization, and running processes for each GPU
+2. **Selection Algorithm**:
+   - **Primary criterion**: Most available memory (free VRAM in MB, descending)
+   - **Secondary criterion**: Fewest running processes (ascending)
+   - **Tertiary criterion**: Lowest GPU index (ascending)
+3. **Special modes**:
+   - `--require-idle`: Only considers GPUs with 0 processes (still sorted by available memory)
+   - Manual `--gpu`: Bypasses auto-selection entirely
+4. **Warnings**: Notifies when using non-idle GPUs (unless `--require-idle` prevents it)
+5. **Execution**: Sets `CUDA_VISIBLE_DEVICES` and replaces current process with your command
+
+**Why memory-first?** A GPU with 10 GB free and 1 process is more useful than an "idle" GPU with 300 MB free. This prevents OOM errors that occurred with the old idle-first algorithm.
 
 ## Examples
 
 ### Training Workflows
 
 ```bash
-# Auto-select one GPU (avoid busy GPUs)
+# Auto-select GPU with most free memory
 with-gpu python train.py
 
 # Force use of GPU 1
 with-gpu --gpu 1 python train.py
 
-# Use 2 GPUs for distributed training
+# Use 2 GPUs with most free memory for distributed training
 with-gpu --min-gpus 2 --max-gpus 2 torchrun --nproc_per_node=2 train.py
 ```
 
@@ -172,13 +182,15 @@ Works with any command that respects `CUDA_VISIBLE_DEVICES`:
 
 Fills the gap between simple utilities and full schedulers:
 - ✅ Executes commands (not just monitoring)
-- ✅ Intelligent fallback (idle → least-used)
+- ✅ Memory-first selection (prevents OOM errors)
+- ✅ Intelligent fallback (uses non-idle GPUs with free memory)
 - ✅ Wait capability with timeout
 - ✅ Multi-GPU min/max support
 - ✅ Lightweight (single Rust binary)
-- ✅ Direct NVML queries (reliable)
+- ✅ Direct NVML queries (reliable, not parsing nvidia-smi)
+- ✅ Cross-platform (Linux + macOS)
 
-**Best for**: Individual workstations, small research groups, "just run this on an idle GPU" workflows.
+**Best for**: Individual workstations, small research groups, "just run this on the GPU with most free memory" workflows.
 
 ## Limitations
 
@@ -198,10 +210,14 @@ Designed for **cooperative environments** (small groups, personal workstations) 
 
 ## Requirements
 
+**On Linux:**
 - NVIDIA GPU(s)
 - NVIDIA driver with NVML library (libnvidia-ml.so)
-- Linux or macOS (uses Unix process exec)
 - Rust toolchain for building
+
+**On macOS:**
+- Rust toolchain for building
+- Commands execute normally without GPU selection (cross-platform script compatibility)
 
 ## Development
 

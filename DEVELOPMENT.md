@@ -21,16 +21,19 @@ src/
    - More reliable than parsing nvidia-smi output
    - Works even when nvidia-smi is replaced/wrapped (as on cool30)
 
-2. **Selection algorithm**:
-   - Prefer idle GPUs (0 processes)
-   - Fall back to least-used GPUs (sorted by memory used, then process count)
+2. **Selection algorithm** (memory-first):
+   - **Primary criterion**: Most available memory (free VRAM in MB, descending)
+   - **Secondary criterion**: Fewest running processes (ascending)
+   - **Tertiary criterion**: Lowest GPU index (ascending)
+   - Exception: `--require-idle` restricts to GPUs with 0 processes (still sorted by memory)
    - Warn when using non-idle GPUs
    - Fail immediately or wait if requirements not met
+   - **Rationale**: Prevents OOM errors. A GPU with 10 GB free and 1 process is more useful than an "idle" GPU with 300 MB free.
 
 3. **Multi-GPU support**:
    - `--min-gpus`: Minimum required (default 1)
    - `--max-gpus`: Maximum to use (default 1)
-   - Auto-select fills with idle first, then least-used
+   - Auto-select picks GPUs with most available memory first
 
 4. **Wait/timeout support**:
    - `--wait`: Poll every 5 seconds until GPUs available
@@ -41,6 +44,12 @@ src/
    - Preserves stdin/stdout/stderr
    - Sets `CUDA_VISIBLE_DEVICES` environment variable
    - Command receives full control of terminal
+
+6. **Cross-platform support**:
+   - **Linux**: Full functionality with NVML queries
+   - **macOS**: No-op mode (executes command without GPU selection)
+   - Uses conditional compilation (`#[cfg(target_os = "macos")]`) to handle platform differences
+   - `nvml-wrapper` dependency only compiled on non-macOS platforms
 
 ## Development Workflow
 
@@ -79,11 +88,14 @@ cargo fmt --check && cargo clippy -- -D warnings && cargo check
 
 ## Testing
 
-### Local Testing (macOS without NVML)
+### Local Testing (macOS)
 
-Most functionality can't be tested on macOS since there's no NVML. You can:
+On macOS, the tool runs in no-op mode (executes commands without GPU selection). You can:
 - Build the binary: `cargo build --release`
 - Check code quality: `cargo fmt --check && cargo clippy -- -D warnings && cargo check`
+- Test basic execution: `with-gpu echo "test"` (should just execute without warnings)
+- Test with flags: `with-gpu --gpu 0 echo "test"` (should show warning about macOS)
+- Test status: `with-gpu --status` (should show "No NVIDIA GPUs available (running on macOS)")
 
 ### Testing on cool30
 

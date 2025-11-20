@@ -23,62 +23,67 @@ pub fn select_gpus(gpus: &[GpuInfo], criteria: &SelectionCriteria) -> Result<Gpu
         anyhow::bail!("No GPUs detected");
     }
 
-    let (idle_gpus, used_gpus) = partition_gpus(gpus);
+    let (idle_gpus, _used_gpus) = partition_gpus(gpus);
 
-    let mut selected = Vec::new();
-    let mut all_idle = true;
-    let mut warning = None;
-
-    if idle_gpus.len() >= criteria.min_gpus {
-        let count = criteria.max_gpus.min(idle_gpus.len());
-        selected.extend(idle_gpus.iter().take(count).map(|g| g.index));
-    } else if criteria.require_idle {
-        anyhow::bail!(
-            "Require {} idle GPUs but only {} available (use --status to see GPU state)",
-            criteria.min_gpus,
-            idle_gpus.len()
-        );
-    } else {
-        selected.extend(idle_gpus.iter().map(|g| g.index));
-
-        let needed = criteria.min_gpus.saturating_sub(idle_gpus.len());
-        if needed > 0 {
-            let sorted_used = sort_by_least_used(&used_gpus);
-            let count = needed.min(sorted_used.len());
-            selected.extend(sorted_used.iter().take(count).map(|g| g.index));
-            all_idle = false;
-
-            if selected.len() < criteria.min_gpus {
-                anyhow::bail!(
-                    "Need {} GPUs but only {} available (use --status to see GPU state)",
-                    criteria.min_gpus,
-                    selected.len()
-                );
-            }
-
-            let used_count = selected.len() - idle_gpus.len();
-            warning = Some(format!(
-                "Warning: Using {} non-idle GPU(s) because only {} idle GPU(s) available",
-                used_count,
+    // If --require-idle is set, only consider idle GPUs
+    if criteria.require_idle {
+        if idle_gpus.len() < criteria.min_gpus {
+            anyhow::bail!(
+                "Require {} idle GPUs but only {} available (use --status to see GPU state)",
+                criteria.min_gpus,
                 idle_gpus.len()
-            ));
+            );
         }
+        // Sort idle GPUs by available memory (most free first)
+        let sorted_idle = sort_by_most_free_refs(&idle_gpus);
+        let count = criteria.max_gpus.min(sorted_idle.len());
+        let selected: Vec<usize> = sorted_idle.iter().take(count).map(|g| g.index).collect();
 
-        if selected.len() < criteria.max_gpus && !used_gpus.is_empty() {
-            let sorted_used = sort_by_least_used(&used_gpus);
-            let remaining = criteria.max_gpus - selected.len();
-            for gpu in sorted_used.iter().take(remaining) {
-                if !selected.contains(&gpu.index) {
-                    selected.push(gpu.index);
-                }
-            }
-        }
+        return Ok(GpuSelection {
+            gpu_indices: selected,
+            all_idle: true,
+            warning: None,
+        });
     }
 
-    selected.sort_unstable();
+    // Sort ALL GPUs by available memory (most free first)
+    // This prioritizes available memory over idle status
+    let all_gpus_sorted = sort_by_most_free(gpus);
+
+    // Select the requested number of GPUs
+    let count = criteria.max_gpus.min(all_gpus_sorted.len());
+    let selected_gpus: Vec<&GpuInfo> = all_gpus_sorted.iter().take(count).copied().collect();
+
+    // Check if we have enough GPUs
+    if selected_gpus.len() < criteria.min_gpus {
+        anyhow::bail!(
+            "Need {} GPUs but only {} available (use --status to see GPU state)",
+            criteria.min_gpus,
+            selected_gpus.len()
+        );
+    }
+
+    // Check if all selected GPUs are idle
+    let all_idle = selected_gpus.iter().all(|g| g.is_idle());
+
+    // Generate warning if we're using non-idle GPUs
+    let warning = if !all_idle {
+        let non_idle_count = selected_gpus.iter().filter(|g| !g.is_idle()).count();
+        let idle_count = idle_gpus.len();
+        Some(format!(
+            "Warning: Using {} non-idle GPU(s) with most available memory (only {} idle GPU(s) available)",
+            non_idle_count,
+            idle_count
+        ))
+    } else {
+        None
+    };
+
+    let mut gpu_indices: Vec<usize> = selected_gpus.iter().map(|g| g.index).collect();
+    gpu_indices.sort_unstable();
 
     Ok(GpuSelection {
-        gpu_indices: selected,
+        gpu_indices,
         all_idle,
         warning,
     })
@@ -99,12 +104,29 @@ fn partition_gpus(gpus: &[GpuInfo]) -> (Vec<&GpuInfo>, Vec<&GpuInfo>) {
     (idle, used)
 }
 
-fn sort_by_least_used<'a>(gpus: &[&'a GpuInfo]) -> Vec<&'a GpuInfo> {
+fn sort_by_most_free(gpus: &[GpuInfo]) -> Vec<&GpuInfo> {
+    let mut sorted: Vec<&GpuInfo> = gpus.iter().collect();
+    sorted.sort_by(|a, b| {
+        // Primary: Most free memory (descending)
+        b.memory_free_mb()
+            .cmp(&a.memory_free_mb())
+            // Secondary: Fewest processes (ascending)
+            .then_with(|| a.process_count.cmp(&b.process_count))
+            // Tertiary: Lowest index (ascending)
+            .then_with(|| a.index.cmp(&b.index))
+    });
+    sorted
+}
+
+fn sort_by_most_free_refs<'a>(gpus: &[&'a GpuInfo]) -> Vec<&'a GpuInfo> {
     let mut sorted = gpus.to_vec();
     sorted.sort_by(|a, b| {
-        a.memory_used_mb
-            .cmp(&b.memory_used_mb)
+        // Primary: Most free memory (descending)
+        b.memory_free_mb()
+            .cmp(&a.memory_free_mb())
+            // Secondary: Fewest processes (ascending)
             .then_with(|| a.process_count.cmp(&b.process_count))
+            // Tertiary: Lowest index (ascending)
             .then_with(|| a.index.cmp(&b.index))
     });
     sorted
