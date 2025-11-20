@@ -15,13 +15,21 @@ Intelligent GPU selection wrapper for CUDA commands. Automatically selects GPUs 
 
 ## Installation
 
+Install from [crates.io](https://crates.io/crates/with-gpu):
+
+```bash
+cargo install with-gpu
+```
+
+This installs `with-gpu` to `~/.cargo/bin/with-gpu` (ensure `~/.cargo/bin` is in your PATH).
+
+### Build from Source
+
 ```bash
 git clone https://github.com/osteele/with-gpu.git
 cd with-gpu
 cargo install --path .
 ```
-
-This installs `with-gpu` to `~/.cargo/bin/with-gpu` (ensure `~/.cargo/bin` is in your PATH).
 
 ## Usage
 
