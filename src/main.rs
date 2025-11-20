@@ -30,18 +30,10 @@ struct Cli {
     )]
     gpu: Option<String>,
 
-    #[arg(
-        long,
-        default_value = "1",
-        help = "Minimum number of GPUs required"
-    )]
+    #[arg(long, default_value = "1", help = "Minimum number of GPUs required")]
     min_gpus: usize,
 
-    #[arg(
-        long,
-        default_value = "1",
-        help = "Maximum number of GPUs to use"
-    )]
+    #[arg(long, default_value = "1", help = "Maximum number of GPUs to use")]
     max_gpus: usize,
 
     #[arg(
@@ -96,6 +88,27 @@ fn main() -> Result<()> {
         anyhow::bail!("No command specified (use --help for usage)");
     }
 
+    // On macOS, skip GPU selection entirely and just execute the command
+    #[cfg(target_os = "macos")]
+    {
+        if gpus.is_empty() {
+            // Only warn if user explicitly requested GPU features beyond defaults
+            let has_non_default_flags = cli.gpu.is_some()
+                || cli.min_gpus != 1
+                || cli.max_gpus != 1
+                || cli.require_idle
+                || cli.wait;
+
+            if has_non_default_flags {
+                eprintln!(
+                    "Warning: GPU selection flags ignored on macOS (no NVIDIA GPUs available)"
+                );
+                eprintln!();
+            }
+            return execute_command_without_gpus(&cli.command);
+        }
+    }
+
     let selection = if let Some(manual_selection) = cli.gpu {
         let gpu_indices = selector::parse_manual_gpu_selection(&manual_selection)?;
         validate_manual_selection(&gpus, &gpu_indices)?;
@@ -146,19 +159,18 @@ fn wait_for_gpus(
 
         match selector::select_gpus(&gpus, criteria) {
             Ok(selection) => {
-                eprintln!("GPUs available after {} attempts ({:.1}s)",
-                    attempt, start_time.elapsed().as_secs_f64());
+                eprintln!(
+                    "GPUs available after {} attempts ({:.1}s)",
+                    attempt,
+                    start_time.elapsed().as_secs_f64()
+                );
                 return Ok(selection);
             }
             Err(e) => {
                 if let Some(timeout) = timeout_secs {
                     let elapsed = start_time.elapsed().as_secs();
                     if elapsed >= timeout {
-                        anyhow::bail!(
-                            "Timeout after {} seconds waiting for GPUs: {}",
-                            elapsed,
-                            e
-                        );
+                        anyhow::bail!("Timeout after {} seconds waiting for GPUs: {}", elapsed, e);
                     }
                 }
 
@@ -172,7 +184,8 @@ fn wait_for_gpus(
                 eprintln!("  Idle GPUs: {}/{}", idle_count, gpus.len());
 
                 if idle_count > 0 {
-                    eprintln!("  Idle GPU indices: {:?}",
+                    eprintln!(
+                        "  Idle GPU indices: {:?}",
                         gpus.iter()
                             .filter(|g| g.is_idle())
                             .map(|g| g.index)
@@ -188,6 +201,20 @@ fn wait_for_gpus(
 }
 
 fn print_status(gpus: &[GpuInfo]) {
+    if gpus.is_empty() {
+        #[cfg(target_os = "macos")]
+        {
+            println!("No NVIDIA GPUs available (running on macOS)");
+            println!("Commands will execute without GPU selection.");
+            return;
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            println!("No GPUs detected");
+            return;
+        }
+    }
+
     println!("Available GPUs:");
     for gpu in gpus {
         println!("  {}", gpu);
@@ -204,10 +231,7 @@ fn validate_manual_selection(gpus: &[GpuInfo], indices: &[usize]) -> Result<()> 
 }
 
 fn print_selection(gpus: &[GpuInfo], selection: &GpuSelection) {
-    eprintln!(
-        "Selected GPU(s): {}",
-        selection.to_cuda_visible_devices()
-    );
+    eprintln!("Selected GPU(s): {}", selection.to_cuda_visible_devices());
 
     for &index in &selection.gpu_indices {
         if let Some(gpu) = gpus.iter().find(|g| g.index == index) {
@@ -236,6 +260,19 @@ fn execute_command(command_parts: &[String], selection: &GpuSelection) -> Result
         .args(args)
         .env("CUDA_VISIBLE_DEVICES", cuda_visible_devices)
         .exec();
+
+    Err(error).context(format!("Failed to execute command: {}", program))
+}
+
+fn execute_command_without_gpus(command_parts: &[String]) -> Result<()> {
+    if command_parts.is_empty() {
+        anyhow::bail!("No command specified");
+    }
+
+    let program = &command_parts[0];
+    let args = &command_parts[1..];
+
+    let error = Command::new(program).args(args).exec();
 
     Err(error).context(format!("Failed to execute command: {}", program))
 }
