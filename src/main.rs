@@ -13,6 +13,7 @@ use with_gpu::{GpuInfo, GpuSelection};
 #[derive(Parser, Debug)]
 #[command(
     name = "with-gpu",
+    version,
     about = "Intelligent GPU selection wrapper for CUDA commands",
     long_about = "Automatically selects idle GPUs or allows manual GPU selection via CUDA_VISIBLE_DEVICES.\n\n\
                   Examples:\n  \
