@@ -11,7 +11,11 @@ pub struct GpuInfo {
 
 impl GpuInfo {
     pub fn is_idle(&self) -> bool {
-        self.process_count == 0
+        // A GPU is idle if it has no processes AND minimal memory usage
+        // We check memory usage because NVML process detection can miss processes
+        // in some cases (e.g., persistence mode, MPS, certain driver states)
+        const IDLE_MEMORY_THRESHOLD_MB: u64 = 500;
+        self.process_count == 0 && self.memory_used_mb < IDLE_MEMORY_THRESHOLD_MB
     }
 
     pub fn memory_free_mb(&self) -> u64 {

@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+- Idle detection now checks memory usage in addition to process count to prevent selecting GPUs with allocated memory
+- Prevents OOM errors when NVML process detection misses GPU-using processes (e.g., with persistence mode or MPS)
+
 ## [0.2.0] - 2025-11-20
 
 ### Added
