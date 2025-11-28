@@ -264,6 +264,7 @@ fn execute_command(command_parts: &[String], selection: &GpuSelection) -> Result
     Err(error).context(format!("Failed to execute command: {}", program))
 }
 
+#[cfg(target_os = "macos")]
 fn execute_command_without_gpus(command_parts: &[String]) -> Result<()> {
     if command_parts.is_empty() {
         anyhow::bail!("No command specified");
