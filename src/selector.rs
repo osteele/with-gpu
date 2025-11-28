@@ -6,6 +6,8 @@ pub struct SelectionCriteria {
     pub min_gpus: usize,
     pub max_gpus: usize,
     pub require_idle: bool,
+    pub min_memory_mb: Option<u64>,
+    pub max_utilization: Option<u8>,
 }
 
 impl Default for SelectionCriteria {
@@ -14,6 +16,8 @@ impl Default for SelectionCriteria {
             min_gpus: 1,
             max_gpus: 1,
             require_idle: false,
+            min_memory_mb: Some(2048),
+            max_utilization: None,
         }
     }
 }
@@ -23,7 +27,42 @@ pub fn select_gpus(gpus: &[GpuInfo], criteria: &SelectionCriteria) -> Result<Gpu
         anyhow::bail!("No GPUs detected");
     }
 
-    let (idle_gpus, _used_gpus) = partition_gpus(gpus);
+    // Apply threshold filters
+    let filtered_gpus: Vec<&GpuInfo> = gpus
+        .iter()
+        .filter(|gpu| {
+            // Filter by minimum free memory
+            if let Some(min_mem) = criteria.min_memory_mb {
+                if gpu.memory_free_mb() < min_mem {
+                    return false;
+                }
+            }
+            // Filter by maximum utilization
+            if let Some(max_util) = criteria.max_utilization {
+                if gpu.utilization_percent > max_util {
+                    return false;
+                }
+            }
+            true
+        })
+        .collect();
+
+    // Check if filtering left us with no GPUs
+    if filtered_gpus.is_empty() {
+        let mut reasons = Vec::new();
+        if let Some(min_mem) = criteria.min_memory_mb {
+            reasons.push(format!("{}+ MB free memory", min_mem));
+        }
+        if let Some(max_util) = criteria.max_utilization {
+            reasons.push(format!("≤{}% utilization", max_util));
+        }
+        anyhow::bail!(
+            "No GPUs found matching criteria: {} (use --status to see GPU state)",
+            reasons.join(", ")
+        );
+    }
+
+    let (idle_gpus, _used_gpus) = partition_gpus_refs(&filtered_gpus);
 
     // If --require-idle is set, only consider idle GPUs
     if criteria.require_idle {
@@ -46,9 +85,9 @@ pub fn select_gpus(gpus: &[GpuInfo], criteria: &SelectionCriteria) -> Result<Gpu
         });
     }
 
-    // Sort ALL GPUs by available memory (most free first)
+    // Sort filtered GPUs by available memory (most free first)
     // This prioritizes available memory over idle status
-    let all_gpus_sorted = sort_by_most_free(gpus);
+    let all_gpus_sorted = sort_by_most_free_refs(&filtered_gpus);
 
     // Select the requested number of GPUs
     let count = criteria.max_gpus.min(all_gpus_sorted.len());
@@ -79,8 +118,7 @@ pub fn select_gpus(gpus: &[GpuInfo], criteria: &SelectionCriteria) -> Result<Gpu
         None
     };
 
-    let mut gpu_indices: Vec<usize> = selected_gpus.iter().map(|g| g.index).collect();
-    gpu_indices.sort_unstable();
+    let gpu_indices: Vec<usize> = selected_gpus.iter().map(|g| g.index).collect();
 
     Ok(GpuSelection {
         gpu_indices,
@@ -89,11 +127,11 @@ pub fn select_gpus(gpus: &[GpuInfo], criteria: &SelectionCriteria) -> Result<Gpu
     })
 }
 
-fn partition_gpus(gpus: &[GpuInfo]) -> (Vec<&GpuInfo>, Vec<&GpuInfo>) {
+fn partition_gpus_refs<'a>(gpus: &[&'a GpuInfo]) -> (Vec<&'a GpuInfo>, Vec<&'a GpuInfo>) {
     let mut idle = Vec::new();
     let mut used = Vec::new();
 
-    for gpu in gpus {
+    for &gpu in gpus {
         if gpu.is_idle() {
             idle.push(gpu);
         } else {
@@ -102,20 +140,6 @@ fn partition_gpus(gpus: &[GpuInfo]) -> (Vec<&GpuInfo>, Vec<&GpuInfo>) {
     }
 
     (idle, used)
-}
-
-fn sort_by_most_free(gpus: &[GpuInfo]) -> Vec<&GpuInfo> {
-    let mut sorted: Vec<&GpuInfo> = gpus.iter().collect();
-    sorted.sort_by(|a, b| {
-        // Primary: Most free memory (descending)
-        b.memory_free_mb()
-            .cmp(&a.memory_free_mb())
-            // Secondary: Fewest processes (ascending)
-            .then_with(|| a.process_count.cmp(&b.process_count))
-            // Tertiary: Lowest index (ascending)
-            .then_with(|| a.index.cmp(&b.index))
-    });
-    sorted
 }
 
 fn sort_by_most_free_refs<'a>(gpus: &[&'a GpuInfo]) -> Vec<&'a GpuInfo> {
