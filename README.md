@@ -85,6 +85,28 @@ with-gpu --min-gpus 2 --require-idle python train.py
 
 **Note**: Without `--require-idle`, the tool selects GPUs by available memory regardless of idle status. Use this flag when you specifically need GPUs with 0 running processes.
 
+### Memory and Utilization Thresholds
+
+Filter GPUs by available memory and utilization:
+
+```bash
+# Require at least 8 GB free memory (default is 2 GB)
+with-gpu --min-memory 8000 python train.py
+
+# Allow any GPU with free memory (disable 2 GB default)
+with-gpu --min-memory 0 python small_inference.py
+
+# Require GPU utilization below 70%
+with-gpu --max-util 70 python train.py
+
+# Combine thresholds: 16 GB free + max 50% utilization
+with-gpu --min-memory 16000 --max-util 50 python train_llm.py
+```
+
+**Default behavior**: By default, `with-gpu` requires at least 2 GB free memory to prevent OOM errors. This is sufficient for PyTorch initialization and most models. For small jobs that need less, use `--min-memory 0`.
+
+**Ghost process detection**: The idle detection uses a 500 MB threshold, which is sufficient for detecting processes that NVML missed (ghost processes with allocated memory).
+
 ### Wait for GPUs
 
 Wait for GPUs to become available instead of failing immediately:
@@ -126,15 +148,19 @@ In this example, auto-selection would pick GPU 1 (24 GB free), then GPU 2 (18 GB
 ## How It Works
 
 1. **Queries GPUs**: Uses NVML library to get memory usage, utilization, and running processes for each GPU
-2. **Selection Algorithm**:
+2. **Threshold Filtering** (before selection):
+   - Default: Requires 2 GB free memory (override with `--min-memory`)
+   - Optional: Maximum utilization percentage (`--max-util`)
+   - Filters GPUs before applying memory-first selection
+3. **Selection Algorithm**:
    - **Primary criterion**: Most available memory (free VRAM in MB, descending)
    - **Secondary criterion**: Fewest running processes (ascending)
    - **Tertiary criterion**: Lowest GPU index (ascending)
-3. **Special modes**:
-   - `--require-idle`: Only considers GPUs with 0 processes (still sorted by available memory)
+4. **Special modes**:
+   - `--require-idle`: Only considers GPUs with 0 processes and <500 MB used (still sorted by available memory)
    - Manual `--gpu`: Bypasses auto-selection entirely
-4. **Warnings**: Notifies when using non-idle GPUs (unless `--require-idle` prevents it)
-5. **Execution**: Sets `CUDA_VISIBLE_DEVICES` and replaces current process with your command
+5. **Warnings**: Notifies when using non-idle GPUs or GPUs with <2 GB free
+6. **Execution**: Sets `CUDA_VISIBLE_DEVICES` and replaces current process with your command
 
 **Why memory-first?** A GPU with 10 GB free and 1 process is more useful than an "idle" GPU with 300 MB free. This prevents OOM errors that occurred with the old idle-first algorithm.
 
@@ -175,10 +201,10 @@ Works with any command that respects `CUDA_VISIBLE_DEVICES`:
 - **PyTorch** / **TensorFlow** training scripts
 - **torchrun** for distributed training
 - Any CUDA application
-- **uv** / **conda** Python environments that run any of the above commands
-- **just** / **make** build recipes that run any of the above commands
 
 ## Related Tools
+
+**[`cuda-selector`](https://github.com/SamerMakni/cuda-selector)** - Python library for in-process GPU selection. Supports memory, power, temperature, and utilization criteria with custom ranking functions. For Python-only workflows where you want device selection within your script rather than as a CLI wrapper.
 
 **`idlegpu`** - Simple shell utility returning idle GPU ID. No multi-GPU, fallback, or wait support.
 
@@ -225,16 +251,19 @@ Designed for **cooperative environments** (small groups, personal workstations) 
 
 **On macOS:**
 - Rust toolchain for building
-- Commands execute normally without GPU selection (cross-platform script compatibility)
+- Commands execute normally without GPU selection. This is in order to use `with-gpu` in cross-platform scripts.
 
 ## Development
 
-See [DEVELOPMENT.md](DEVELOPMENT.md) for comprehensive development documentation including:
-- Architecture and design decisions
+See [DEVELOPMENT.md](DEVELOPMENT.md) for development documentation including:
 - Development workflow and code quality standards
 - Testing procedures
 - Style guidelines
 - Troubleshooting common issues
+
+See [DESIGN.md](DESIGN.md) for design rationale and architectural decisions.
+
+See [ROADMAP.md](ROADMAP.md) for planned features and future directions.
 
 ## License
 

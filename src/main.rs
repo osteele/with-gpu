@@ -3,6 +3,7 @@ mod selector;
 
 use anyhow::{Context, Result};
 use clap::Parser;
+#[cfg(unix)]
 use std::os::unix::process::CommandExt;
 use std::process::Command;
 use std::thread;
@@ -45,6 +46,20 @@ struct Cli {
 
     #[arg(
         long,
+        help = "Minimum free memory required in MB (default: 2048 MB for PyTorch)\n\
+                Use --min-memory 0 to disable and allow any GPU"
+    )]
+    min_memory: Option<u64>,
+
+    #[arg(
+        long,
+        help = "Maximum GPU utilization percentage (0-100)\n\
+                Example: --max-util 70 excludes GPUs with >70% utilization"
+    )]
+    max_util: Option<u8>,
+
+    #[arg(
+        long,
         help = "Wait for GPUs to become available if not immediately available"
     )]
     wait: bool,
@@ -76,6 +91,12 @@ fn main() -> Result<()> {
             cli.min_gpus,
             cli.max_gpus
         );
+    }
+
+    if let Some(util) = cli.max_util {
+        if util > 100 {
+            anyhow::bail!("max-util must be between 0 and 100, got {}", util);
+        }
     }
 
     let gpus = nvidia::query_gpus()?;
@@ -110,29 +131,33 @@ fn main() -> Result<()> {
         }
     }
 
-    let selection = if let Some(manual_selection) = cli.gpu {
+    let (selection, display_gpus) = if let Some(manual_selection) = cli.gpu {
         let gpu_indices = selector::parse_manual_gpu_selection(&manual_selection)?;
         validate_manual_selection(&gpus, &gpu_indices)?;
-        GpuSelection {
+        let selection = GpuSelection {
             gpu_indices,
             all_idle: false,
             warning: None,
-        }
+        };
+        (selection, gpus)
     } else {
         let criteria = selector::SelectionCriteria {
             min_gpus: cli.min_gpus,
             max_gpus: cli.max_gpus,
             require_idle: cli.require_idle,
+            min_memory_mb: cli.min_memory.or(Some(2048)),
+            max_utilization: cli.max_util,
         };
 
         if cli.wait {
             wait_for_gpus(&criteria, cli.timeout)?
         } else {
-            selector::select_gpus(&gpus, &criteria)?
+            let sel = selector::select_gpus(&gpus, &criteria)?;
+            (sel, gpus)
         }
     };
 
-    print_selection(&gpus, &selection);
+    print_selection(&display_gpus, &selection);
 
     execute_command(&cli.command, &selection)
 }
@@ -140,7 +165,7 @@ fn main() -> Result<()> {
 fn wait_for_gpus(
     criteria: &selector::SelectionCriteria,
     timeout_secs: Option<u64>,
-) -> Result<GpuSelection> {
+) -> Result<(GpuSelection, Vec<GpuInfo>)> {
     let start_time = Instant::now();
     let poll_interval = Duration::from_secs(5);
     let mut attempt = 1;
@@ -165,7 +190,7 @@ fn wait_for_gpus(
                     attempt,
                     start_time.elapsed().as_secs_f64()
                 );
-                return Ok(selection);
+                return Ok((selection, gpus));
             }
             Err(e) => {
                 if let Some(timeout) = timeout_secs {
@@ -223,6 +248,10 @@ fn print_status(gpus: &[GpuInfo]) {
 }
 
 fn validate_manual_selection(gpus: &[GpuInfo], indices: &[usize]) -> Result<()> {
+    if gpus.is_empty() {
+        anyhow::bail!("No GPUs detected on this system");
+    }
+
     for &index in indices {
         if !gpus.iter().any(|g| g.index == index) {
             anyhow::bail!("GPU {} not found (available: 0-{})", index, gpus.len() - 1);
@@ -236,6 +265,15 @@ fn print_selection(gpus: &[GpuInfo], selection: &GpuSelection) {
 
     for &index in &selection.gpu_indices {
         if let Some(gpu) = gpus.iter().find(|g| g.index == index) {
+            let free_gb = gpu.memory_free_mb() as f64 / 1024.0;
+
+            if gpu.memory_free_mb() < 2048 {
+                eprintln!(
+                    "Warning: GPU {} has only {:.2} GB free (< 2 GB recommended for PyTorch)",
+                    index, free_gb
+                );
+            }
+
             eprintln!("  {}", gpu);
         }
     }
@@ -257,12 +295,29 @@ fn execute_command(command_parts: &[String], selection: &GpuSelection) -> Result
 
     let cuda_visible_devices = selection.to_cuda_visible_devices();
 
-    let error = Command::new(program)
-        .args(args)
-        .env("CUDA_VISIBLE_DEVICES", cuda_visible_devices)
-        .exec();
+    #[cfg(unix)]
+    {
+        let error = Command::new(program)
+            .args(args)
+            .env("CUDA_VISIBLE_DEVICES", cuda_visible_devices)
+            .exec();
 
-    Err(error).context(format!("Failed to execute command: {}", program))
+        Err(error).context(format!("Failed to execute command: {}", program))
+    }
+
+    #[cfg(not(unix))]
+    {
+        let status = Command::new(program)
+            .args(args)
+            .env("CUDA_VISIBLE_DEVICES", cuda_visible_devices)
+            .status()
+            .context(format!("Failed to execute command: {}", program))?;
+
+        if !status.success() {
+            anyhow::bail!("Command exited with status: {}", status);
+        }
+        Ok(())
+    }
 }
 
 #[cfg(target_os = "macos")]

@@ -88,6 +88,28 @@ cargo fmt --check && cargo clippy -- -D warnings && cargo check
 
 ## Testing
 
+### Current State
+
+This project currently has **no automated unit tests** (`cargo test` runs 0 tests).
+
+**Why No Tests?**
+- GPU selection logic requires NVML library and actual GPU hardware
+- NVML cannot be easily mocked (C library with complex state)
+- Would need test doubles for entire NVML interface
+
+**Testing Approach:**
+
+**Manual testing on real hardware** (machine with NVIDIA GPUs, e.g., 8x RTX 3090):
+1. Test threshold filtering with various `--min-memory` and `--max-util` values
+2. Test manual selection with `--gpu`
+3. Test wait behavior with `--wait --timeout`
+4. Test edge cases: no GPUs, all GPUs busy, invalid GPU IDs
+
+**Future Improvements:**
+- Consider integration tests that run on CI machines with GPUs
+- Mock NVML for unit tests of selection logic (complex but possible)
+- Add property-based tests for selection algorithms
+
 ### Local Testing (macOS)
 
 On macOS, the tool runs in no-op mode (executes commands without GPU selection). You can:
@@ -97,13 +119,13 @@ On macOS, the tool runs in no-op mode (executes commands without GPU selection).
 - Test with flags: `with-gpu --gpu 0 echo "test"` (should show warning about macOS)
 - Test status: `with-gpu --status` (should show "No NVIDIA GPUs available (running on macOS)")
 
-### Testing on cool30
+### Testing on Linux with NVIDIA GPUs
 
-After mutagen sync, test on cool30:
+If you have access to a Linux machine with NVIDIA GPUs:
 
 ```bash
-ssh cool30
-cd ~/code/research/with-gpu
+# Install the tool
+cd ~/code/with-gpu
 cargo install --path .
 
 # Test status display
@@ -176,7 +198,7 @@ Shows all GPUs with memory usage, utilization, and process counts.
 
 ### Quick Testing
 
-Local testing commands (if you have NVML/CUDA):
+Local testing commands (if you have NVIDIA GPUs with NVML/CUDA):
 
 ```bash
 # Show GPU status
@@ -189,7 +211,7 @@ cargo run -- echo "Testing with-gpu wrapper"
 cargo run -- --gpu 0 echo "Using GPU 0"
 ```
 
-For comprehensive testing on machines with actual GPUs, use cool30 (see Testing section above).
+For comprehensive testing, use a Linux machine with NVIDIA GPUs (see Testing section above).
 
 ## Troubleshooting
 
@@ -200,7 +222,7 @@ Error: "Failed to initialize NVML (is the NVIDIA driver installed?)"
 Solution:
 - Ensure you're on a machine with NVIDIA GPUs
 - Check that NVML library exists: `ldconfig -p | grep nvidia-ml`
-- On cool30, the library should be at `/usr/lib/x86_64-linux-gnu/libnvidia-ml.so`
+- The library is typically at `/usr/lib/x86_64-linux-gnu/libnvidia-ml.so` on Linux
 
 ### GPU Selection Fails
 

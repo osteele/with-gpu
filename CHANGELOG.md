@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- `--min-memory` flag to specify minimum free memory in MB (default: 2048 MB)
+- `--max-util` flag to filter GPUs by maximum utilization percentage
+- Warning when selected GPU has less than 2 GB free memory
+- Documentation about ghost process detection threshold (500 MB)
+
+### Changed
+- Default behavior now requires 2 GB free memory (PyTorch-friendly default)
+- Users can disable with `--min-memory 0` for small workloads
+- Threshold filtering applied before GPU selection for better control
+
 ### Fixed
 - Idle detection now checks memory usage in addition to process count to prevent selecting GPUs with allocated memory
 - Prevents OOM errors when NVML process detection misses GPU-using processes (e.g., with persistence mode or MPS)
