@@ -1,3 +1,4 @@
+mod lockfile;
 mod nvidia;
 mod selector;
 
@@ -159,6 +160,18 @@ fn main() -> Result<()> {
 
     print_selection(&display_gpus, &selection);
 
+    // Claim the selected GPUs before executing the command
+    for &gpu_index in &selection.gpu_indices {
+        if let Err(e) = lockfile::claim_gpu(gpu_index) {
+            // If we fail to claim, another process grabbed it between selection and claim
+            anyhow::bail!(
+                "Failed to claim GPU {}: {} (try again, another process may have claimed it)",
+                gpu_index,
+                e
+            );
+        }
+    }
+
     execute_command(&cli.command, &selection)
 }
 
@@ -241,9 +254,24 @@ fn print_status(gpus: &[GpuInfo]) {
         }
     }
 
+    let claimed_gpus = lockfile::get_claimed_gpus();
+
     println!("Available GPUs:");
     for gpu in gpus {
-        println!("  {}", gpu);
+        let claim_info = claimed_gpus
+            .iter()
+            .find(|(idx, _)| *idx == gpu.index)
+            .map(|(_, pid)| format!(" [claimed by pid {}]", pid))
+            .unwrap_or_default();
+        println!("  {}{}", gpu, claim_info);
+    }
+
+    if !claimed_gpus.is_empty() {
+        println!();
+        println!(
+            "Note: {} GPU(s) claimed by other with-gpu processes",
+            claimed_gpus.len()
+        );
     }
 }
 
