@@ -1,5 +1,6 @@
 use anyhow::{Context, Result};
 
+use crate::lockfile;
 use crate::{GpuInfo, GpuSelection};
 
 pub struct SelectionCriteria {
@@ -27,10 +28,14 @@ pub fn select_gpus(gpus: &[GpuInfo], criteria: &SelectionCriteria) -> Result<Gpu
         anyhow::bail!("No GPUs detected");
     }
 
-    // Apply threshold filters
+    // Apply threshold filters and exclude claimed GPUs
     let filtered_gpus: Vec<&GpuInfo> = gpus
         .iter()
         .filter(|gpu| {
+            // Filter out GPUs claimed by other processes
+            if !lockfile::is_gpu_available(gpu.index) {
+                return false;
+            }
             // Filter by minimum free memory
             if let Some(min_mem) = criteria.min_memory_mb {
                 if gpu.memory_free_mb() < min_mem {
@@ -50,11 +55,18 @@ pub fn select_gpus(gpus: &[GpuInfo], criteria: &SelectionCriteria) -> Result<Gpu
     // Check if filtering left us with no GPUs
     if filtered_gpus.is_empty() {
         let mut reasons = Vec::new();
+        let claimed = lockfile::get_claimed_gpus();
+        if !claimed.is_empty() {
+            reasons.push(format!(
+                "{} GPU(s) claimed by other processes",
+                claimed.len()
+            ));
+        }
         if let Some(min_mem) = criteria.min_memory_mb {
-            reasons.push(format!("{}+ MB free memory", min_mem));
+            reasons.push(format!("{}+ MB free memory required", min_mem));
         }
         if let Some(max_util) = criteria.max_utilization {
-            reasons.push(format!("≤{}% utilization", max_util));
+            reasons.push(format!("≤{}% utilization required", max_util));
         }
         anyhow::bail!(
             "No GPUs found matching criteria: {} (use --status to see GPU state)",
