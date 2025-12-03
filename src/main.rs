@@ -26,11 +26,7 @@ use with_gpu::{GpuInfo, GpuSelection};
                   with-gpu --status"
 )]
 struct Cli {
-    #[arg(
-        long,
-        help = "Manual GPU selection (e.g., '1' or '0,1,2')",
-        conflicts_with_all = ["min_gpus", "max_gpus", "require_idle"]
-    )]
+    #[arg(long, help = "Manual GPU selection (e.g., '1' or '0,1,2')")]
     gpu: Option<String>,
 
     #[arg(long, default_value = "1", help = "Minimum number of GPUs required")]
@@ -132,30 +128,37 @@ fn main() -> Result<()> {
         }
     }
 
-    let (selection, display_gpus) = if let Some(manual_selection) = cli.gpu {
-        let gpu_indices = selector::parse_manual_gpu_selection(&manual_selection)?;
-        validate_manual_selection(&gpus, &gpu_indices)?;
-        let selection = GpuSelection {
-            gpu_indices,
-            all_idle: false,
-            warning: None,
-        };
-        (selection, gpus)
+    let criteria = selector::SelectionCriteria {
+        min_gpus: cli.min_gpus,
+        max_gpus: cli.max_gpus,
+        require_idle: cli.require_idle,
+        min_memory_mb: cli.min_memory.or(Some(2048)),
+        max_utilization: cli.max_util,
+    };
+
+    // Parse manual GPU selection if provided
+    let manual_gpu_indices = if let Some(ref manual_selection) = cli.gpu {
+        let indices = selector::parse_manual_gpu_selection(manual_selection)?;
+        validate_manual_selection(&gpus, &indices)?;
+        Some(indices)
     } else {
-        let criteria = selector::SelectionCriteria {
-            min_gpus: cli.min_gpus,
-            max_gpus: cli.max_gpus,
-            require_idle: cli.require_idle,
-            min_memory_mb: cli.min_memory.or(Some(2048)),
-            max_utilization: cli.max_util,
+        None
+    };
+
+    let (selection, display_gpus) = if cli.wait {
+        wait_for_gpus(&criteria, cli.timeout, manual_gpu_indices.as_deref())?
+    } else {
+        // Filter to candidate GPUs (manual selection or all)
+        let candidate_gpus: Vec<GpuInfo> = if let Some(ref indices) = manual_gpu_indices {
+            gpus.into_iter()
+                .filter(|g| indices.contains(&g.index))
+                .collect()
+        } else {
+            gpus
         };
 
-        if cli.wait {
-            wait_for_gpus(&criteria, cli.timeout)?
-        } else {
-            let sel = selector::select_gpus(&gpus, &criteria)?;
-            (sel, gpus)
-        }
+        let sel = selector::select_gpus(&candidate_gpus, &criteria)?;
+        (sel, candidate_gpus)
     };
 
     print_selection(&display_gpus, &selection);
@@ -178,6 +181,7 @@ fn main() -> Result<()> {
 fn wait_for_gpus(
     criteria: &selector::SelectionCriteria,
     timeout_secs: Option<u64>,
+    manual_gpu_indices: Option<&[usize]>,
 ) -> Result<(GpuSelection, Vec<GpuInfo>)> {
     let start_time = Instant::now();
     let poll_interval = Duration::from_secs(5);
@@ -187,6 +191,9 @@ fn wait_for_gpus(
     if let Some(timeout) = timeout_secs {
         eprintln!("  Timeout: {} seconds", timeout);
     }
+    if let Some(indices) = manual_gpu_indices {
+        eprintln!("  Manual selection: {:?}", indices);
+    }
     eprintln!(
         "  Requirements: min={}, max={}, require_idle={}",
         criteria.min_gpus, criteria.max_gpus, criteria.require_idle
@@ -194,16 +201,27 @@ fn wait_for_gpus(
     eprintln!();
 
     loop {
-        let gpus = nvidia::query_gpus()?;
+        let all_gpus = nvidia::query_gpus()?;
 
-        match selector::select_gpus(&gpus, criteria) {
+        // Filter to candidate GPUs (manual selection or all)
+        let candidate_gpus: Vec<GpuInfo> = if let Some(indices) = manual_gpu_indices {
+            all_gpus
+                .iter()
+                .filter(|g| indices.contains(&g.index))
+                .cloned()
+                .collect()
+        } else {
+            all_gpus.clone()
+        };
+
+        match selector::select_gpus(&candidate_gpus, criteria) {
             Ok(selection) => {
                 eprintln!(
                     "GPUs available after {} attempts ({:.1}s)",
                     attempt,
                     start_time.elapsed().as_secs_f64()
                 );
-                return Ok((selection, gpus));
+                return Ok((selection, candidate_gpus));
             }
             Err(e) => {
                 if let Some(timeout) = timeout_secs {
@@ -219,13 +237,14 @@ fn wait_for_gpus(
                     start_time.elapsed().as_secs_f64()
                 );
 
-                let idle_count = gpus.iter().filter(|g| g.is_idle()).count();
-                eprintln!("  Idle GPUs: {}/{}", idle_count, gpus.len());
+                let idle_count = candidate_gpus.iter().filter(|g| g.is_idle()).count();
+                eprintln!("  Idle GPUs: {}/{}", idle_count, candidate_gpus.len());
 
                 if idle_count > 0 {
                     eprintln!(
                         "  Idle GPU indices: {:?}",
-                        gpus.iter()
+                        candidate_gpus
+                            .iter()
                             .filter(|g| g.is_idle())
                             .map(|g| g.index)
                             .collect::<Vec<_>>()

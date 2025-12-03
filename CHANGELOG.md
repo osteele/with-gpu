@@ -11,6 +11,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Lock file coordination to prevent race conditions when multiple `with-gpu` processes start simultaneously
 - `--status` now shows GPUs claimed by other `with-gpu` processes
 
+### Changed
+- `--gpu` now respects `--min-memory`, `--max-util`, `--require-idle`, and `--wait`/`--timeout` flags
+- Manual GPU selection is now composable with all filtering and wait options
+
+### Fixed
+- Lock file validation now correctly handles EPERM (other user's process) instead of treating it as stale
+- `--status` now dynamically enumerates lock files instead of hardcoding GPU indices 0-15
+
 ## [0.3.0] - 2025-12-02
 
 ### Added
