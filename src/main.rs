@@ -1,3 +1,5 @@
+#[cfg(not(target_os = "macos"))]
+mod cuda;
 mod lockfile;
 mod nvidia;
 mod selector;

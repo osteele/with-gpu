@@ -12,16 +12,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `--status` now shows GPUs claimed by other `with-gpu` processes
 - Hidden memory usage detection: compares total GPU memory used vs. memory attributed to visible processes
 - GPUs with significant unattributed memory (>512 MB) are now marked as "suspected hidden usage" and filtered out
+- CUDA Driver API memory queries via `cudarc` crate for accurate GPU memory reporting
 
 ### Changed
 - `--gpu` now respects `--min-memory`, `--max-util`, `--require-idle`, and `--wait`/`--timeout` flags
 - Manual GPU selection is now composable with all filtering and wait options
 - `is_idle()` now also checks for hidden memory usage
+- GPU memory queries now use CUDA Driver API instead of NVML for memory info (NVML still used for process list and utilization)
 
 ### Fixed
 - Lock file validation now correctly handles EPERM (other user's process) instead of treating it as stale
 - `--status` now dynamically enumerates lock files instead of hardcoding GPU indices 0-15
 - GPU selection now detects "ghost" processes that use GPU memory but don't appear in NVML's process list (fixes stale nvidia-smi data bug)
+- GPU memory reporting is now accurate even when NVML reports stale data (uses CUDA API which queries hardware directly)
 
 ## [0.3.0] - 2025-12-02
 
