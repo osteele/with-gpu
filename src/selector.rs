@@ -1,7 +1,7 @@
 use anyhow::{Context, Result};
 
 use crate::lockfile;
-use crate::{GpuInfo, GpuSelection};
+use with_gpu::{GpuInfo, GpuSelection, HIDDEN_USAGE_THRESHOLD_MB};
 
 pub struct SelectionCriteria {
     pub min_gpus: usize,
@@ -36,6 +36,10 @@ pub fn select_gpus(gpus: &[GpuInfo], criteria: &SelectionCriteria) -> Result<Gpu
             if !lockfile::is_gpu_available(gpu.index) {
                 return false;
             }
+            // Filter out GPUs with hidden memory usage (stale NVML data)
+            if gpu.has_hidden_usage(HIDDEN_USAGE_THRESHOLD_MB) {
+                return false;
+            }
             // Filter by minimum free memory
             if let Some(min_mem) = criteria.min_memory_mb {
                 if gpu.memory_free_mb() < min_mem {
@@ -60,6 +64,16 @@ pub fn select_gpus(gpus: &[GpuInfo], criteria: &SelectionCriteria) -> Result<Gpu
             reasons.push(format!(
                 "{} GPU(s) claimed by other processes",
                 claimed.len()
+            ));
+        }
+        let hidden_count = gpus
+            .iter()
+            .filter(|g| g.has_hidden_usage(HIDDEN_USAGE_THRESHOLD_MB))
+            .count();
+        if hidden_count > 0 {
+            reasons.push(format!(
+                "{} GPU(s) have suspected hidden memory usage",
+                hidden_count
             ));
         }
         if let Some(min_mem) = criteria.min_memory_mb {
