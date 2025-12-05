@@ -10,14 +10,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 - Lock file coordination to prevent race conditions when multiple `with-gpu` processes start simultaneously
 - `--status` now shows GPUs claimed by other `with-gpu` processes
+- Hidden memory usage detection: compares total GPU memory used vs. memory attributed to visible processes
+- GPUs with significant unattributed memory (>512 MB) are now marked as "suspected hidden usage" and filtered out
 
 ### Changed
 - `--gpu` now respects `--min-memory`, `--max-util`, `--require-idle`, and `--wait`/`--timeout` flags
 - Manual GPU selection is now composable with all filtering and wait options
+- `is_idle()` now also checks for hidden memory usage
 
 ### Fixed
 - Lock file validation now correctly handles EPERM (other user's process) instead of treating it as stale
 - `--status` now dynamically enumerates lock files instead of hardcoding GPU indices 0-15
+- GPU selection now detects "ghost" processes that use GPU memory but don't appear in NVML's process list (fixes stale nvidia-smi data bug)
 
 ## [0.3.0] - 2025-12-02
 
