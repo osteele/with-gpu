@@ -4,6 +4,30 @@
 //! bypassing NVML which can return stale data in some scenarios.
 
 use anyhow::{anyhow, Result};
+use std::ffi::OsString;
+
+struct RemovedEnvironmentVariable {
+    name: &'static str,
+    value: Option<OsString>,
+}
+
+impl RemovedEnvironmentVariable {
+    fn new(name: &'static str) -> Self {
+        let value = std::env::var_os(name);
+        std::env::remove_var(name);
+        Self { name, value }
+    }
+}
+
+impl Drop for RemovedEnvironmentVariable {
+    fn drop(&mut self) {
+        if let Some(value) = &self.value {
+            std::env::set_var(self.name, value);
+        } else {
+            std::env::remove_var(self.name);
+        }
+    }
+}
 
 /// Memory information for a single GPU.
 #[derive(Debug, Clone)]
@@ -48,8 +72,13 @@ pub fn query_device_memory(device_index: usize) -> Result<CudaMemoryInfo> {
     // Create/retain a primary context for this device
     // SAFETY: device is a valid device handle obtained from device::get
     let ctx = unsafe {
-        result::primary_ctx::retain(device)
-            .map_err(|e| anyhow!("Failed to create CUDA context for device {}: {:?}", device_index, e))?
+        result::primary_ctx::retain(device).map_err(|e| {
+            anyhow!(
+                "Failed to create CUDA context for device {}: {:?}",
+                device_index,
+                e
+            )
+        })?
     };
 
     // Push context to make it current
@@ -60,8 +89,13 @@ pub fn query_device_memory(device_index: usize) -> Result<CudaMemoryInfo> {
     }
 
     // Query memory info using the result module's wrapper
-    let (free, total) = result::mem_get_info()
-        .map_err(|e| anyhow!("Failed to get memory info for device {}: {:?}", device_index, e))?;
+    let (free, total) = result::mem_get_info().map_err(|e| {
+        anyhow!(
+            "Failed to get memory info for device {}: {:?}",
+            device_index,
+            e
+        )
+    })?;
 
     // Release the primary context (decrements refcount, doesn't destroy)
     // SAFETY: device is a valid device handle
@@ -81,6 +115,12 @@ pub fn query_device_memory(device_index: usize) -> Result<CudaMemoryInfo> {
 pub fn query_all_device_memory() -> Result<Vec<CudaMemoryInfo>> {
     use cudarc::driver::result;
 
+    // CUDA ordinals are filtered and reordered by CUDA_VISIBLE_DEVICES, while
+    // NVML indices are physical. Query the unfiltered device list so the two
+    // APIs describe the same ordinal space. The launched command receives its
+    // selected CUDA_VISIBLE_DEVICES value later, after exec.
+    let _visible_devices = RemovedEnvironmentVariable::new("CUDA_VISIBLE_DEVICES");
+
     // Initialize CUDA driver API
     result::init().map_err(|e| anyhow!("Failed to initialize CUDA driver: {:?}", e))?;
 
@@ -93,7 +133,10 @@ pub fn query_all_device_memory() -> Result<Vec<CudaMemoryInfo>> {
             Ok(info) => results.push(info),
             Err(e) => {
                 // Log warning but continue with other devices
-                eprintln!("Warning: Failed to query CUDA memory for device {}: {}", i, e);
+                eprintln!(
+                    "Warning: Failed to query CUDA memory for device {}: {}",
+                    i, e
+                );
             }
         }
     }

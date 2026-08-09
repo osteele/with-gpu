@@ -11,6 +11,7 @@ Intelligent GPU selection wrapper for CUDA commands. Automatically selects GPUs 
 - ⏱️ **Wait capability**: Poll for GPU availability with configurable timeout
 - 📊 **Status display**: View all GPUs and their current usage
 - ⚠️ **Warning messages**: Get notified when using non-idle GPUs
+- 🔒 **Cooperative claims**: Prevents concurrent `with-gpu` commands from selecting the same GPU
 - 🍎 **Cross-platform**: Works on Linux (with NVIDIA GPUs) and macOS (no-op mode)
 
 ## Installation
@@ -56,6 +57,10 @@ with-gpu --gpu 0,1 python train.py
 with-gpu --gpu 0,1,2,3 torchrun --nproc_per_node=4 train.py
 ```
 
+Manual IDs are preserved exactly, including their order. Automatic `--min-gpus` and
+`--max-gpus` ranking does not apply, but availability, memory, utilization, idle,
+and wait filters still do.
+
 ### Multi-GPU Auto-selection
 
 Request a range of GPUs:
@@ -79,8 +84,8 @@ Enforce idle-only selection (no non-idle GPUs even if they have more free memory
 # Single idle GPU required
 with-gpu --require-idle python train.py
 
-# Multiple idle GPUs required
-with-gpu --min-gpus 2 --require-idle python train.py
+# Exactly 2 idle GPUs required
+with-gpu --min-gpus 2 --max-gpus 2 --require-idle python train.py
 ```
 
 **Note**: Without `--require-idle`, the tool selects GPUs by available memory regardless of idle status. Use this flag when you specifically need GPUs with 0 running processes.
@@ -158,7 +163,7 @@ In this example, auto-selection would pick GPU 1 (24 GB free), then GPU 2 (18 GB
    - **Tertiary criterion**: Lowest GPU index (ascending)
 4. **Special modes**:
    - `--require-idle`: Only considers GPUs with 0 processes and <500 MB used (still sorted by available memory)
-   - Manual `--gpu`: Bypasses auto-selection entirely
+   - Manual `--gpu`: Preserves the exact requested IDs and order while applying filters
 5. **Warnings**: Notifies when using non-idle GPUs or GPUs with <2 GB free
 6. **Execution**: Sets `CUDA_VISIBLE_DEVICES` and replaces current process with your command
 
@@ -190,8 +195,8 @@ with-gpu --gpu 2 python experiment_c.py &
 # Only run if a GPU is completely free
 with-gpu --require-idle python long_training.py
 
-# Use all available idle GPUs
-with-gpu --max-gpus 8 python distributed_train.py
+# Use up to 8 available idle GPUs
+with-gpu --max-gpus 8 --require-idle python distributed_train.py
 ```
 
 ## Integration with Other Tools
@@ -228,15 +233,17 @@ Fills the gap between simple utilities and full schedulers:
 
 ## Limitations
 
-- ❌ Multiple processes may select same GPU simultaneously
-- ❌ GPU memory allocation delay creates race condition window
+- ❌ Programs that do not use `with-gpu` do not participate in cooperative claims
 - ❌ Intermittent GPU usage may appear as idle
+- ❌ Claims coordinate only processes on the same host and shared `/tmp` namespace
 - ❌ No queue management or FIFO ordering
 - ❌ No priority system for waiting processes
 - ❌ No resource reservation or advance scheduling
 - ❌ Not suitable for environments requiring fairness guarantees
 
-**Mitigation**: Use `--require-idle`, `--wait`, or stagger launches. See [docs/limitations.md](docs/limitations.md) for detailed discussion.
+**Mitigation**: Launch cooperating jobs through `with-gpu`, and use `--require-idle`
+or `--wait` when external GPU activity is possible. See
+[docs/limitations.md](docs/limitations.md) for details.
 
 **When you need more**: For guaranteed fair scheduling, priority queues, or resource reservations, use SLURM or Kubernetes.
 

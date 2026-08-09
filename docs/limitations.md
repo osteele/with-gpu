@@ -2,39 +2,33 @@
 
 This document describes the limitations of `with-gpu` in detail. For a quick overview, see the [Limitations section in README.md](../README.md#limitations).
 
-## Race Conditions
+## Coordination Boundaries
 
-### Multiple Processes Selecting Simultaneously
+### Cooperative Claims
 
-If multiple `with-gpu` processes run at the same time, they may select the same GPU before either has started using it. The OS scheduler determines which waiting process runs next, with no FIFO guarantees.
+Concurrent `with-gpu` processes coordinate through advisory locks in
+`/tmp/with-gpu`. A claim is acquired before the command starts, inherited across
+process replacement, and released by the operating system when the command exits.
+This prevents two cooperating commands from claiming the same GPU, including
+during application startup before CUDA memory is allocated.
 
-**What happens:**
-1. Process A queries GPUs and finds GPU 1 idle
-2. Process B queries GPUs (before A has started) and also finds GPU 1 idle
-3. Both processes select GPU 1
-4. Both commands start, potentially causing out-of-memory errors
+Claims are local to one host and its shared `/tmp` namespace. They do not provide
+distributed coordination across machines or containers with isolated temporary
+filesystems.
 
-**Why it happens:** There's a time gap between querying GPU status and actually allocating memory. During this window, the GPU appears idle to other processes.
+### Programs Outside `with-gpu`
 
-### GPU Acquisition Delay
+Programs launched directly do not acquire a cooperative claim. They can begin
+using a GPU after `with-gpu` checks its status or while another command holds a
+claim. The lock cannot reserve CUDA memory or prevent direct device access.
 
-Programs may take time to allocate GPU memory after starting. During this window, another `with-gpu` process might see the GPU as idle and select it.
+For coordination to work, launch all cooperating workloads through `with-gpu`.
 
-**What happens:**
-1. Process A starts training script on GPU 1
-2. Training script imports libraries, initializes (1-5 seconds)
-3. Process B checks GPUs, sees GPU 1 has 0 processes, selects it
-4. Process A finally allocates 20GB of GPU memory
-5. Process B tries to allocate memory, gets out-of-memory error
+### Intermittent External GPU Usage
 
-**Typical delay times:**
-- PyTorch import + CUDA initialization: 2-3 seconds
-- Loading large models: 5-10 seconds
-- Multi-GPU initialization: 10-15 seconds
-
-### Intermittent GPU Usage
-
-Programs that release GPU memory between execution phases may appear idle when they're not. The tool can't distinguish between "done" and "between phases."
+Programs outside `with-gpu` that release GPU memory between execution phases may
+appear idle when they are not. The tool cannot distinguish between "done" and
+"between phases" without a cooperative claim.
 
 **Examples:**
 - Data preprocessing on CPU, then GPU training in batches
@@ -64,42 +58,14 @@ with-gpu --require-idle python train.py
 
 ### Use `--wait`
 
-Reduces the chance of simultaneous selection by spreading out attempts:
+Wait for a cooperative claim or suitable GPU state instead of failing immediately:
 
 ```bash
 with-gpu --wait python train.py
 ```
 
-**How it helps:**
-- If no GPU available, waits and retries
-- Other processes start using their selected GPUs during the wait
-- Next check sees those GPUs as occupied
-
-**Limitation:** Doesn't eliminate race conditions, just reduces frequency.
-
-### Stagger Experiment Launches
-
-Manually delay between launching multiple experiments:
-
-```bash
-with-gpu python experiment1.py &
-sleep 10  # Give experiment1 time to allocate GPU
-with-gpu python experiment2.py &
-sleep 10
-with-gpu python experiment3.py &
-```
-
-**Best practice:** 5-10 second gaps are usually sufficient for GPU allocation to complete.
-
-### Future Enhancement: Lockfile
-
-**Not yet implemented:** Optional `--lockfile` flag to serialize GPU selection:
-
-```bash
-with-gpu --lockfile /tmp/gpu-lock python train.py
-```
-
-Would use file-based locking to ensure only one process selects GPUs at a time. See [Possible Future Enhancements](../DEVELOPMENT.md#possible-future-enhancements).
+If a suitable GPU is busy or claimed, `--wait` retries until one becomes
+available. This does not establish FIFO ordering between waiters.
 
 ## Fairness and Priority
 
@@ -123,7 +89,7 @@ Would use file-based locking to ensure only one process selects GPUs at a time. 
 
 **Keeps it simple:**
 - No daemon or background service
-- No shared state between processes
+- No queue or scheduling database
 - No authentication or user tracking
 - Single binary, instant startup
 
@@ -189,7 +155,7 @@ This transforms a simple wrapper into a full workload manager. At that point, ju
 - Zero configuration
 - Instant startup (no daemon)
 - No admin privileges needed
-- No persistent state
+- No persistent scheduler state; lock files are only local coordination points
 - Works on any machine with NVML
 
 **Trade-off:** Simplicity over fairness. If you need fairness, use proper tools.
@@ -216,8 +182,8 @@ This transforms a simple wrapper into a full workload manager. At that point, ju
 
 `with-gpu` makes **trade-offs for simplicity**:
 
-- ❌ No race condition prevention → ✅ No daemon, instant startup
+- ❌ No enforcement for programs outside `with-gpu` → ✅ No daemon or privileges
 - ❌ No fairness guarantees → ✅ No user tracking, zero config
-- ❌ No resource reservation → ✅ No persistent state, stateless
+- ❌ No CUDA resource enforcement → ✅ Lightweight advisory coordination
 
 These limitations are **by design** to keep the tool lightweight and simple. If you need more sophisticated resource management, use SLURM or Kubernetes.

@@ -8,8 +8,10 @@ This guide covers the development workflow, architecture, and guidelines for dev
 
 ```
 src/
+├── cuda.rs        # CUDA Driver API memory queries
 ├── main.rs        # CLI entry point (clap), command execution
 ├── lib.rs         # Shared types (GpuInfo, GpuSelection)
+├── lockfile.rs    # Cross-process GPU claim coordination
 ├── nvidia.rs      # NVML library interface for GPU queries
 └── selector.rs    # GPU selection algorithm
 ```
@@ -90,12 +92,15 @@ cargo fmt --check && cargo clippy -- -D warnings && cargo check
 
 ### Current State
 
-This project currently has **no automated unit tests** (`cargo test` runs 0 tests).
+The automated tests cover shared GPU state, manual selection behavior, lock
+exclusion and permissions, and wait timeout calculations. Run them with:
 
-**Why No Tests?**
-- GPU selection logic requires NVML library and actual GPU hardware
-- NVML cannot be easily mocked (C library with complex state)
-- Would need test doubles for entire NVML interface
+```bash
+cargo test
+```
+
+NVML and CUDA integration still requires NVIDIA hardware, so those paths need a
+manual smoke test on a GPU host.
 
 **Testing Approach:**
 
@@ -106,8 +111,7 @@ This project currently has **no automated unit tests** (`cargo test` runs 0 test
 4. Test edge cases: no GPUs, all GPUs busy, invalid GPU IDs
 
 **Future Improvements:**
-- Consider integration tests that run on CI machines with GPUs
-- Mock NVML for unit tests of selection logic (complex but possible)
+- Add integration tests that run on CI machines with GPUs
 - Add property-based tests for selection algorithms
 
 ### Local Testing (macOS)

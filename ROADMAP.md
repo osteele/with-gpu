@@ -120,8 +120,8 @@ $ with-gpu --status --json
 These features are explicitly **not** planned:
 
 ### GPU Memory Reservation
-- **Why**: Would require persistence between tool invocation and job start (lock files, shared memory, or coordinator service)
-- **Alternative**: Users with race condition concerns should use SLURM or similar
+- **Why**: Would require CUDA allocation or enforcement beyond cooperative advisory claims
+- **Alternative**: Users needing enforced reservations should use SLURM or similar
 
 ### Multi-Node Support
 - **Why**: Would require network communication and coordination

@@ -42,16 +42,17 @@ pub fn query_gpus() -> Result<Vec<GpuInfo>> {
                 .context(format!("Failed to get memory info for GPU {}", i))?;
 
             // Prefer CUDA memory info if available (more accurate)
-            let (memory_used_mb, memory_total_mb) =
-                if let Some(cuda_info) = cuda_memory.iter().find(|m| m.device_index == i as usize) {
-                    (cuda_info.used_mb(), cuda_info.total_mb())
-                } else {
-                    // Fallback to NVML if CUDA query failed for this device
-                    (
-                        nvml_memory_info.used / (1024 * 1024),
-                        nvml_memory_info.total / (1024 * 1024),
-                    )
-                };
+            let (memory_used_mb, memory_total_mb) = if let Some(cuda_info) =
+                cuda_memory.iter().find(|m| m.device_index == i as usize)
+            {
+                (cuda_info.used_mb(), cuda_info.total_mb())
+            } else {
+                // Fallback to NVML if CUDA query failed for this device
+                (
+                    nvml_memory_info.used / (1024 * 1024),
+                    nvml_memory_info.total / (1024 * 1024),
+                )
+            };
 
             let utilization = device
                 .utilization_rates()

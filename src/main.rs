@@ -141,7 +141,7 @@ fn main() -> Result<()> {
     // Parse manual GPU selection if provided
     let manual_gpu_indices = if let Some(ref manual_selection) = cli.gpu {
         let indices = selector::parse_manual_gpu_selection(manual_selection)?;
-        validate_manual_selection(&gpus, &indices)?;
+        selector::validate_manual_gpu_selection(&gpus, &indices)?;
         Some(indices)
     } else {
         None
@@ -150,34 +150,34 @@ fn main() -> Result<()> {
     let (selection, display_gpus) = if cli.wait {
         wait_for_gpus(&criteria, cli.timeout, manual_gpu_indices.as_deref())?
     } else {
-        // Filter to candidate GPUs (manual selection or all)
-        let candidate_gpus: Vec<GpuInfo> = if let Some(ref indices) = manual_gpu_indices {
-            gpus.into_iter()
-                .filter(|g| indices.contains(&g.index))
-                .collect()
+        let selection = if let Some(ref indices) = manual_gpu_indices {
+            selector::select_manual_gpus(&gpus, indices, &criteria)?
         } else {
-            gpus
+            selector::select_gpus(&gpus, &criteria)?
         };
-
-        let sel = selector::select_gpus(&candidate_gpus, &criteria)?;
-        (sel, candidate_gpus)
+        (selection, gpus)
     };
 
     print_selection(&display_gpus, &selection);
 
-    // Claim the selected GPUs before executing the command
+    // Keep each claim alive until exec transfers its file descriptor to the command.
+    let mut claims = Vec::with_capacity(selection.gpu_indices.len());
     for &gpu_index in &selection.gpu_indices {
-        if let Err(e) = lockfile::claim_gpu(gpu_index) {
-            // If we fail to claim, another process grabbed it between selection and claim
-            anyhow::bail!(
-                "Failed to claim GPU {}: {} (try again, another process may have claimed it)",
-                gpu_index,
-                e
-            );
+        match lockfile::claim_gpu(gpu_index) {
+            Ok(claim) => claims.push(claim),
+            Err(error) => {
+                anyhow::bail!(
+                    "Failed to claim GPU {}: {} (try again, another process may have claimed it)",
+                    gpu_index,
+                    error
+                );
+            }
         }
     }
 
-    execute_command(&cli.command, &selection)
+    let result = execute_command(&cli.command, &selection);
+    drop(claims);
+    result
 }
 
 fn wait_for_gpus(
@@ -187,6 +187,7 @@ fn wait_for_gpus(
 ) -> Result<(GpuSelection, Vec<GpuInfo>)> {
     let start_time = Instant::now();
     let poll_interval = Duration::from_secs(5);
+    let timeout = timeout_secs.map(Duration::from_secs);
     let mut attempt = 1;
 
     eprintln!("Waiting for GPUs to become available...");
@@ -205,31 +206,30 @@ fn wait_for_gpus(
     loop {
         let all_gpus = nvidia::query_gpus()?;
 
-        // Filter to candidate GPUs (manual selection or all)
-        let candidate_gpus: Vec<GpuInfo> = if let Some(indices) = manual_gpu_indices {
-            all_gpus
-                .iter()
-                .filter(|g| indices.contains(&g.index))
-                .cloned()
-                .collect()
+        let selection_result = if let Some(indices) = manual_gpu_indices {
+            selector::select_manual_gpus(&all_gpus, indices, criteria)
         } else {
-            all_gpus.clone()
+            selector::select_gpus(&all_gpus, criteria)
         };
 
-        match selector::select_gpus(&candidate_gpus, criteria) {
+        match selection_result {
             Ok(selection) => {
                 eprintln!(
                     "GPUs available after {} attempts ({:.1}s)",
                     attempt,
                     start_time.elapsed().as_secs_f64()
                 );
-                return Ok((selection, candidate_gpus));
+                return Ok((selection, all_gpus));
             }
             Err(e) => {
-                if let Some(timeout) = timeout_secs {
-                    let elapsed = start_time.elapsed().as_secs();
+                if let Some(timeout) = timeout {
+                    let elapsed = start_time.elapsed();
                     if elapsed >= timeout {
-                        anyhow::bail!("Timeout after {} seconds waiting for GPUs: {}", elapsed, e);
+                        anyhow::bail!(
+                            "Timeout after {:.1} seconds waiting for GPUs: {}",
+                            elapsed.as_secs_f64(),
+                            e
+                        );
                     }
                 }
 
@@ -239,13 +239,21 @@ fn wait_for_gpus(
                     start_time.elapsed().as_secs_f64()
                 );
 
-                let idle_count = candidate_gpus.iter().filter(|g| g.is_idle()).count();
-                eprintln!("  Idle GPUs: {}/{}", idle_count, candidate_gpus.len());
+                let displayed_gpus: Vec<&GpuInfo> = if let Some(indices) = manual_gpu_indices {
+                    all_gpus
+                        .iter()
+                        .filter(|gpu| indices.contains(&gpu.index))
+                        .collect()
+                } else {
+                    all_gpus.iter().collect()
+                };
+                let idle_count = displayed_gpus.iter().filter(|gpu| gpu.is_idle()).count();
+                eprintln!("  Idle GPUs: {}/{}", idle_count, displayed_gpus.len());
 
                 if idle_count > 0 {
                     eprintln!(
                         "  Idle GPU indices: {:?}",
-                        candidate_gpus
+                        displayed_gpus
                             .iter()
                             .filter(|g| g.is_idle())
                             .map(|g| g.index)
@@ -253,11 +261,23 @@ fn wait_for_gpus(
                     );
                 }
 
-                thread::sleep(poll_interval);
+                let sleep_duration =
+                    polling_sleep_duration(start_time.elapsed(), timeout, poll_interval);
+                thread::sleep(sleep_duration);
                 attempt += 1;
             }
         }
     }
+}
+
+fn polling_sleep_duration(
+    elapsed: Duration,
+    timeout: Option<Duration>,
+    poll_interval: Duration,
+) -> Duration {
+    timeout
+        .map(|timeout| poll_interval.min(timeout.saturating_sub(elapsed)))
+        .unwrap_or(poll_interval)
 }
 
 fn print_status(gpus: &[GpuInfo]) {
@@ -282,7 +302,13 @@ fn print_status(gpus: &[GpuInfo]) {
         let claim_info = claimed_gpus
             .iter()
             .find(|(idx, _)| *idx == gpu.index)
-            .map(|(_, pid)| format!(" [claimed by pid {}]", pid))
+            .map(|(_, pid)| {
+                if *pid == 0 {
+                    " [claimed]".to_string()
+                } else {
+                    format!(" [claimed by pid {}]", pid)
+                }
+            })
             .unwrap_or_default();
         println!("  {}{}", gpu, claim_info);
     }
@@ -294,19 +320,6 @@ fn print_status(gpus: &[GpuInfo]) {
             claimed_gpus.len()
         );
     }
-}
-
-fn validate_manual_selection(gpus: &[GpuInfo], indices: &[usize]) -> Result<()> {
-    if gpus.is_empty() {
-        anyhow::bail!("No GPUs detected on this system");
-    }
-
-    for &index in indices {
-        if !gpus.iter().any(|g| g.index == index) {
-            anyhow::bail!("GPU {} not found (available: 0-{})", index, gpus.len() - 1);
-        }
-    }
-    Ok(())
 }
 
 fn print_selection(gpus: &[GpuInfo], selection: &GpuSelection) {
@@ -381,4 +394,20 @@ fn execute_command_without_gpus(command_parts: &[String]) -> Result<()> {
     let error = Command::new(program).args(args).exec();
 
     Err(error).context(format!("Failed to execute command: {}", program))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn polling_sleep_does_not_overshoot_timeout() {
+        let delay = polling_sleep_duration(
+            Duration::from_millis(250),
+            Some(Duration::from_secs(1)),
+            Duration::from_secs(5),
+        );
+
+        assert_eq!(delay, Duration::from_millis(750));
+    }
 }

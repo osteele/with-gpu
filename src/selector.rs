@@ -1,4 +1,5 @@
 use anyhow::{Context, Result};
+use std::collections::HashSet;
 
 use crate::lockfile;
 use with_gpu::{GpuInfo, GpuSelection, HIDDEN_USAGE_THRESHOLD_MB};
@@ -153,6 +154,111 @@ pub fn select_gpus(gpus: &[GpuInfo], criteria: &SelectionCriteria) -> Result<Gpu
     })
 }
 
+/// Select exactly the requested GPU indices, preserving their order.
+///
+/// Manual selection bypasses the automatic min/max count and ranking rules, but
+/// every requested GPU must still satisfy the availability and threshold filters.
+pub fn select_manual_gpus(
+    gpus: &[GpuInfo],
+    indices: &[usize],
+    criteria: &SelectionCriteria,
+) -> Result<GpuSelection> {
+    validate_manual_gpu_selection(gpus, indices)?;
+
+    let selected_gpus: Vec<&GpuInfo> = indices
+        .iter()
+        .map(|index| {
+            gpus.iter()
+                .find(|gpu| gpu.index == *index)
+                .expect("manual GPU indices were validated")
+        })
+        .collect();
+
+    for gpu in &selected_gpus {
+        if let Some(reason) = gpu_rejection_reason(gpu, criteria) {
+            anyhow::bail!(
+                "Manually selected GPU {} is unavailable: {} (use --status to see GPU state)",
+                gpu.index,
+                reason
+            );
+        }
+    }
+
+    let all_idle = selected_gpus.iter().all(|gpu| gpu.is_idle());
+    let warning = if all_idle {
+        None
+    } else {
+        let non_idle_count = selected_gpus.iter().filter(|gpu| !gpu.is_idle()).count();
+        Some(format!(
+            "Warning: Manually selected {} non-idle GPU(s)",
+            non_idle_count
+        ))
+    };
+
+    Ok(GpuSelection {
+        gpu_indices: indices.to_vec(),
+        all_idle,
+        warning,
+    })
+}
+
+pub fn validate_manual_gpu_selection(gpus: &[GpuInfo], indices: &[usize]) -> Result<()> {
+    if indices.is_empty() {
+        anyhow::bail!("Manual GPU selection cannot be empty");
+    }
+
+    let mut unique_indices = HashSet::with_capacity(indices.len());
+    for &index in indices {
+        if !unique_indices.insert(index) {
+            anyhow::bail!("GPU {} is listed more than once", index);
+        }
+        if !gpus.iter().any(|gpu| gpu.index == index) {
+            let available = gpus
+                .iter()
+                .map(|gpu| gpu.index.to_string())
+                .collect::<Vec<_>>()
+                .join(",");
+            anyhow::bail!("GPU {} not found (available: {})", index, available);
+        }
+    }
+
+    Ok(())
+}
+
+fn gpu_rejection_reason(gpu: &GpuInfo, criteria: &SelectionCriteria) -> Option<String> {
+    if !lockfile::is_gpu_available(gpu.index) {
+        return Some("claimed by another with-gpu process".to_string());
+    }
+    if gpu.has_hidden_usage(HIDDEN_USAGE_THRESHOLD_MB) {
+        return Some(format!(
+            "{} MB of suspected hidden memory usage",
+            gpu.hidden_usage_mb
+        ));
+    }
+    if let Some(min_mem) = criteria.min_memory_mb {
+        if gpu.memory_free_mb() < min_mem {
+            return Some(format!(
+                "{} MB free memory is below the required {} MB",
+                gpu.memory_free_mb(),
+                min_mem
+            ));
+        }
+    }
+    if let Some(max_util) = criteria.max_utilization {
+        if gpu.utilization_percent > max_util {
+            return Some(format!(
+                "{}% utilization exceeds the allowed {}%",
+                gpu.utilization_percent, max_util
+            ));
+        }
+    }
+    if criteria.require_idle && !gpu.is_idle() {
+        return Some("GPU is not idle".to_string());
+    }
+
+    None
+}
+
 fn partition_gpus_refs<'a>(gpus: &[&'a GpuInfo]) -> (Vec<&'a GpuInfo>, Vec<&'a GpuInfo>) {
     let mut idle = Vec::new();
     let mut used = Vec::new();
@@ -191,4 +297,54 @@ pub fn parse_manual_gpu_selection(input: &str) -> Result<Vec<usize>> {
                 .context(format!("Invalid GPU ID: '{}'", s))
         })
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn make_gpu(index: usize, memory_used_mb: u64) -> GpuInfo {
+        GpuInfo {
+            index,
+            memory_used_mb,
+            memory_total_mb: 24_000,
+            utilization_percent: 0,
+            process_count: usize::from(memory_used_mb >= 500),
+            hidden_usage_mb: 0,
+        }
+    }
+
+    #[test]
+    fn manual_selection_preserves_all_indices_and_their_order() {
+        let gpus = vec![make_gpu(10_001, 1_000), make_gpu(10_002, 2_000)];
+        let criteria = SelectionCriteria {
+            max_gpus: 1,
+            min_memory_mb: Some(0),
+            ..SelectionCriteria::default()
+        };
+
+        let selection = select_manual_gpus(&gpus, &[10_002, 10_001], &criteria).unwrap();
+
+        assert_eq!(selection.gpu_indices, vec![10_002, 10_001]);
+    }
+
+    #[test]
+    fn manual_selection_rejects_duplicate_indices() {
+        let gpus = vec![make_gpu(10_001, 0)];
+
+        let error = select_manual_gpus(&gpus, &[10_001, 10_001], &SelectionCriteria::default())
+            .unwrap_err();
+
+        assert!(error.to_string().contains("listed more than once"));
+    }
+
+    #[test]
+    fn manual_selection_applies_thresholds() {
+        let gpus = vec![make_gpu(10_001, 23_000)];
+
+        let error =
+            select_manual_gpus(&gpus, &[10_001], &SelectionCriteria::default()).unwrap_err();
+
+        assert!(error.to_string().contains("below the required 2048 MB"));
+    }
 }
