@@ -94,27 +94,6 @@ with-gpu --profile llm python train_llm.py
 
 ---
 
-### 3. JSON/Machine-Readable Output
-
-**Idea**: Add `--json` flag for machine-parseable output.
-
-**Use case**: Integration with other tools, scripting.
-
-**Example**:
-```bash
-$ with-gpu --status --json
-{
-  "gpus": [
-    {"index": 0, "memory_free_mb": 15000, "memory_total_mb": 24268, ...},
-    {"index": 1, "memory_free_mb": 24000, "memory_total_mb": 24268, ...}
-  ]
-}
-```
-
-**Verdict**: Low priority but straightforward to add. Could be useful for integration.
-
----
-
 ## Out of Scope
 
 These features are explicitly **not** planned:
@@ -182,7 +161,6 @@ Currently in 0.x phase - breaking changes are acceptable with proper documentati
 | Memory reservation | Won't implement | Too complex for single-node tool | 2025-11 |
 | Multi-node support | Won't implement | Use SLURM instead | 2025-11 |
 | Config file support | Maybe | Useful but adds complexity | 2025-11 |
-| JSON output | Low priority | Easy to add if demanded | 2025-11 |
 
 ---
 

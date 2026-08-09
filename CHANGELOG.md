@@ -7,13 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- GPU model preference with `--gpu-type` and strict matching with `--strict`
+- Machine-readable `--status --json` output including GPU model and claim data
+- Configurable claim namespace through `--lock-dir` and `WITH_GPU_LOCK_DIR`
+
 ### Changed
 - Upgrade `clap`, `anyhow`, `libc`, `nvml-wrapper`, `cudarc`, and transitive dependencies
+- Default `--max-gpus` to `--min-gpus`, so `--min-gpus 2` requests exactly two GPUs
+- Reject zero GPU counts during command-line parsing
 
 ### Fixed
 - Preserve every manually selected GPU and its requested order
-- Make GPU claims atomic, process-lifetime-bound, and usable across local users
-- Prevent inherited `CUDA_VISIBLE_DEVICES` from corrupting CUDA/NVML index matching
+- Make multi-GPU claim sets atomic and retry claim races while waiting
+- Keep claims process-lifetime-bound and usable across local users
+- Match CUDA memory data to NVML devices by UUID instead of ordinal
+- Restore and release CUDA contexts on every query path
 - Keep wait polling within the requested timeout
 - Refresh the dependency lockfile and development documentation
 
