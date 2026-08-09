@@ -67,7 +67,7 @@ Request a range of GPUs:
 
 ```bash
 # Need exactly 2 GPUs
-with-gpu --min-gpus 2 --max-gpus 2 python train.py
+with-gpu --min-gpus 2 python train.py
 
 # Want 1-4 GPUs (use as many idle as available, up to 4)
 with-gpu --max-gpus 4 python train.py
@@ -146,6 +146,17 @@ The tool polls every 5 seconds and shows:
 - Number of attempts
 - Time waited
 - Current idle GPU count and indices
+
+Selection and claiming happen in the same retry loop. If another `with-gpu`
+process wins a claim race, a waiting process retries instead of failing.
+
+### Cooperative Claim Directory
+
+Claims use `/tmp/with-gpu` by default. Set `--lock-dir PATH` or the
+`WITH_GPU_LOCK_DIR` environment variable when containers or users need a
+different shared namespace. The directory is created with mode `1777`; if an
+older directory cannot be migrated to those permissions, the error recommends
+using a new lock directory.
 
 ### Check GPU Status
 
@@ -253,7 +264,7 @@ Fills the gap between simple utilities and full schedulers:
 
 - ❌ Programs that do not use `with-gpu` do not participate in cooperative claims
 - ❌ Intermittent GPU usage may appear as idle
-- ❌ Claims coordinate only processes on the same host and shared `/tmp` namespace
+- ❌ Claims coordinate only processes on the same host and shared lock namespace
 - ❌ No queue management or FIFO ordering
 - ❌ No priority system for waiting processes
 - ❌ No resource reservation or advance scheduling

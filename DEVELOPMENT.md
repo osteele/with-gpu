@@ -34,20 +34,25 @@ src/
 
 3. **Multi-GPU support**:
    - `--min-gpus`: Minimum required (default 1)
-   - `--max-gpus`: Maximum to use (default 1)
+   - `--max-gpus`: Maximum to use (defaults to `--min-gpus`)
    - Auto-select picks GPUs with most available memory first
 
 4. **Wait/timeout support**:
    - `--wait`: Poll every 5 seconds until GPUs available
    - `--timeout N`: Fail after N seconds of waiting
    - Shows progress: attempt count, time waited, idle GPU count
+   - Selection and the full claim set are retried together after claim races
 
-5. **Command execution**: Use `std::process::Command::exec()` to replace current process
+5. **Discovery abstraction**:
+   - `GpuProvider` separates selection/wait behavior from NVML discovery
+   - Fixture providers exercise changing GPU state without NVIDIA hardware
+
+6. **Command execution**: Use `std::process::Command::exec()` to replace current process
    - Preserves stdin/stdout/stderr
    - Sets `CUDA_VISIBLE_DEVICES` environment variable
    - Command receives full control of terminal
 
-6. **Cross-platform support**:
+7. **Cross-platform support**:
    - **Linux**: Full functionality with NVML queries
    - **macOS**: No-op mode (executes command without GPU selection)
    - Uses conditional compilation (`#[cfg(target_os = "macos")]`) to handle platform differences

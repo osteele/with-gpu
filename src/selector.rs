@@ -1,7 +1,7 @@
 use anyhow::{Context, Result};
 use std::collections::HashSet;
 
-use crate::lockfile;
+use crate::lockfile::LockManager;
 use with_gpu::{GpuInfo, GpuSelection, HIDDEN_USAGE_THRESHOLD_MB};
 
 pub struct SelectionCriteria {
@@ -28,7 +28,11 @@ impl Default for SelectionCriteria {
     }
 }
 
-pub fn select_gpus(gpus: &[GpuInfo], criteria: &SelectionCriteria) -> Result<GpuSelection> {
+pub fn select_gpus(
+    gpus: &[GpuInfo],
+    criteria: &SelectionCriteria,
+    locks: &LockManager,
+) -> Result<GpuSelection> {
     if gpus.is_empty() {
         anyhow::bail!("No GPUs detected");
     }
@@ -45,7 +49,7 @@ pub fn select_gpus(gpus: &[GpuInfo], criteria: &SelectionCriteria) -> Result<Gpu
             );
         }
         if !matching.is_empty() {
-            match select_from_candidates(&matching, criteria) {
+            match select_from_candidates(&matching, criteria, locks) {
                 Ok(selection) => return Ok(selection),
                 Err(error) if criteria.require_type_match => return Err(error),
                 Err(_) => {}
@@ -53,12 +57,13 @@ pub fn select_gpus(gpus: &[GpuInfo], criteria: &SelectionCriteria) -> Result<Gpu
         }
     }
 
-    select_from_candidates(&gpus.iter().collect::<Vec<_>>(), criteria)
+    select_from_candidates(&gpus.iter().collect::<Vec<_>>(), criteria, locks)
 }
 
 fn select_from_candidates(
     candidate_gpus: &[&GpuInfo],
     criteria: &SelectionCriteria,
+    locks: &LockManager,
 ) -> Result<GpuSelection> {
     // Apply threshold filters and exclude claimed GPUs
     let filtered_gpus: Vec<&GpuInfo> = candidate_gpus
@@ -66,7 +71,7 @@ fn select_from_candidates(
         .copied()
         .filter(|gpu| {
             // Filter out GPUs claimed by other processes
-            if !lockfile::is_gpu_available(gpu.index) {
+            if !locks.is_gpu_available(gpu.index) {
                 return false;
             }
             // Filter out GPUs with hidden memory usage (stale NVML data)
@@ -92,7 +97,7 @@ fn select_from_candidates(
     // Check if filtering left us with no GPUs
     if filtered_gpus.is_empty() {
         let mut reasons = Vec::new();
-        let claimed = lockfile::get_claimed_gpus();
+        let claimed = locks.get_claimed_gpus();
         if !claimed.is_empty() {
             reasons.push(format!(
                 "{} GPU(s) claimed by other processes",
@@ -194,6 +199,7 @@ pub fn select_manual_gpus(
     gpus: &[GpuInfo],
     indices: &[usize],
     criteria: &SelectionCriteria,
+    locks: &LockManager,
 ) -> Result<GpuSelection> {
     validate_manual_gpu_selection(gpus, indices)?;
 
@@ -207,7 +213,7 @@ pub fn select_manual_gpus(
         .collect();
 
     for gpu in &selected_gpus {
-        if let Some(reason) = gpu_rejection_reason(gpu, criteria) {
+        if let Some(reason) = gpu_rejection_reason(gpu, criteria, locks) {
             anyhow::bail!(
                 "Manually selected GPU {} is unavailable: {} (use --status to see GPU state)",
                 gpu.index,
@@ -257,8 +263,12 @@ pub fn validate_manual_gpu_selection(gpus: &[GpuInfo], indices: &[usize]) -> Res
     Ok(())
 }
 
-fn gpu_rejection_reason(gpu: &GpuInfo, criteria: &SelectionCriteria) -> Option<String> {
-    if !lockfile::is_gpu_available(gpu.index) {
+fn gpu_rejection_reason(
+    gpu: &GpuInfo,
+    criteria: &SelectionCriteria,
+    locks: &LockManager,
+) -> Option<String> {
+    if !locks.is_gpu_available(gpu.index) {
         return Some("claimed by another with-gpu process".to_string());
     }
     if gpu.has_hidden_usage(HIDDEN_USAGE_THRESHOLD_MB) {
@@ -347,6 +357,12 @@ mod tests {
         }
     }
 
+    fn locks() -> LockManager {
+        LockManager::new(
+            std::env::temp_dir().join(format!("with-gpu-selector-tests-{}", std::process::id())),
+        )
+    }
+
     #[test]
     fn manual_selection_preserves_all_indices_and_their_order() {
         let gpus = vec![make_gpu(10_001, 1_000), make_gpu(10_002, 2_000)];
@@ -356,7 +372,7 @@ mod tests {
             ..SelectionCriteria::default()
         };
 
-        let selection = select_manual_gpus(&gpus, &[10_002, 10_001], &criteria).unwrap();
+        let selection = select_manual_gpus(&gpus, &[10_002, 10_001], &criteria, &locks()).unwrap();
 
         assert_eq!(selection.gpu_indices, vec![10_002, 10_001]);
     }
@@ -365,8 +381,13 @@ mod tests {
     fn manual_selection_rejects_duplicate_indices() {
         let gpus = vec![make_gpu(10_001, 0)];
 
-        let error = select_manual_gpus(&gpus, &[10_001, 10_001], &SelectionCriteria::default())
-            .unwrap_err();
+        let error = select_manual_gpus(
+            &gpus,
+            &[10_001, 10_001],
+            &SelectionCriteria::default(),
+            &locks(),
+        )
+        .unwrap_err();
 
         assert!(error.to_string().contains("listed more than once"));
     }
@@ -382,7 +403,7 @@ mod tests {
             ..SelectionCriteria::default()
         };
 
-        let selection = select_gpus(&[preferred, fallback], &criteria).unwrap();
+        let selection = select_gpus(&[preferred, fallback], &criteria, &locks()).unwrap();
         assert_eq!(selection.gpu_indices, vec![1]);
     }
 
@@ -395,7 +416,7 @@ mod tests {
             ..SelectionCriteria::default()
         };
 
-        assert!(select_gpus(&[gpu], &criteria)
+        assert!(select_gpus(&[gpu], &criteria, &locks())
             .unwrap_err()
             .to_string()
             .contains("matching type"));
@@ -405,8 +426,8 @@ mod tests {
     fn manual_selection_applies_thresholds() {
         let gpus = vec![make_gpu(10_001, 23_000)];
 
-        let error =
-            select_manual_gpus(&gpus, &[10_001], &SelectionCriteria::default()).unwrap_err();
+        let error = select_manual_gpus(&gpus, &[10_001], &SelectionCriteria::default(), &locks())
+            .unwrap_err();
 
         assert!(error.to_string().contains("below the required 2048 MB"));
     }

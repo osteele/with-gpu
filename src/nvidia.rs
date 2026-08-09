@@ -11,6 +11,18 @@ use nvml_wrapper::Nvml;
 #[cfg(not(target_os = "macos"))]
 use crate::cuda;
 
+pub trait GpuProvider {
+    fn query_gpus(&self) -> Result<Vec<GpuInfo>>;
+}
+
+pub struct NvidiaProvider;
+
+impl GpuProvider for NvidiaProvider {
+    fn query_gpus(&self) -> Result<Vec<GpuInfo>> {
+        query_gpus()
+    }
+}
+
 pub fn query_gpus() -> Result<Vec<GpuInfo>> {
     #[cfg(target_os = "macos")]
     {

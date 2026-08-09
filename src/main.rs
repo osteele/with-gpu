@@ -9,11 +9,24 @@ use clap::Parser;
 use serde::Serialize;
 #[cfg(unix)]
 use std::os::unix::process::CommandExt;
+use std::path::PathBuf;
 use std::process::Command;
 use std::thread;
 use std::time::{Duration, Instant};
 
+use crate::nvidia::GpuProvider;
 use with_gpu::{GpuInfo, GpuSelection};
+
+fn parse_positive_usize(value: &str) -> std::result::Result<usize, String> {
+    let parsed = value
+        .parse::<usize>()
+        .map_err(|_| format!("'{value}' is not a positive integer"))?;
+    if parsed == 0 {
+        Err("value must be at least 1".to_string())
+    } else {
+        Ok(parsed)
+    }
+}
 
 #[derive(Parser, Debug)]
 #[command(
@@ -32,11 +45,11 @@ struct Cli {
     #[arg(long, help = "Manual GPU selection (e.g., '1' or '0,1,2')")]
     gpu: Option<String>,
 
-    #[arg(long, default_value = "1", help = "Minimum number of GPUs required")]
+    #[arg(long, default_value = "1", value_parser = parse_positive_usize, help = "Minimum number of GPUs required")]
     min_gpus: usize,
 
-    #[arg(long, default_value = "1", help = "Maximum number of GPUs to use")]
-    max_gpus: usize,
+    #[arg(long, value_parser = parse_positive_usize, help = "Maximum number of GPUs to use (defaults to --min-gpus)")]
+    max_gpus: Option<usize>,
 
     #[arg(
         long,
@@ -91,6 +104,15 @@ struct Cli {
     json: bool,
 
     #[arg(
+        long,
+        env = "WITH_GPU_LOCK_DIR",
+        default_value = "/tmp/with-gpu",
+        value_name = "PATH",
+        help = "Shared directory used for cooperative GPU claims"
+    )]
+    lock_dir: PathBuf,
+
+    #[arg(
         trailing_var_arg = true,
         allow_hyphen_values = true,
         help = "Command to execute with selected GPUs"
@@ -100,12 +122,13 @@ struct Cli {
 
 fn main() -> Result<()> {
     let cli = Cli::parse();
+    let max_gpus = cli.max_gpus.unwrap_or(cli.min_gpus);
 
-    if cli.min_gpus > cli.max_gpus {
+    if cli.min_gpus > max_gpus {
         anyhow::bail!(
             "min-gpus ({}) cannot be greater than max-gpus ({})",
             cli.min_gpus,
-            cli.max_gpus
+            max_gpus
         );
     }
 
@@ -115,10 +138,12 @@ fn main() -> Result<()> {
         }
     }
 
-    let gpus = nvidia::query_gpus()?;
+    let provider = nvidia::NvidiaProvider;
+    let locks = lockfile::LockManager::new(&cli.lock_dir);
+    let gpus = provider.query_gpus()?;
 
     if cli.status {
-        print_status(&gpus, cli.json)?;
+        print_status(&gpus, cli.json, &locks)?;
         return Ok(());
     }
 
@@ -133,7 +158,7 @@ fn main() -> Result<()> {
             // Only warn if user explicitly requested GPU features beyond defaults
             let has_non_default_flags = cli.gpu.is_some()
                 || cli.min_gpus != 1
-                || cli.max_gpus != 1
+                || cli.max_gpus.is_some()
                 || cli.require_idle
                 || cli.wait;
 
@@ -149,7 +174,7 @@ fn main() -> Result<()> {
 
     let criteria = selector::SelectionCriteria {
         min_gpus: cli.min_gpus,
-        max_gpus: cli.max_gpus,
+        max_gpus,
         require_idle: cli.require_idle,
         min_memory_mb: cli.min_memory.or(Some(2048)),
         max_utilization: cli.max_util,
@@ -166,46 +191,73 @@ fn main() -> Result<()> {
         None
     };
 
-    let (selection, display_gpus) = if cli.wait {
-        wait_for_gpus(&criteria, cli.timeout, manual_gpu_indices.as_deref())?
+    let (selection, display_gpus, claims) = if cli.wait {
+        wait_for_gpus(
+            &provider,
+            &locks,
+            &criteria,
+            cli.timeout,
+            manual_gpu_indices.as_deref(),
+        )?
     } else {
-        let selection = if let Some(ref indices) = manual_gpu_indices {
-            selector::select_manual_gpus(&gpus, indices, &criteria)?
-        } else {
-            selector::select_gpus(&gpus, &criteria)?
-        };
-        (selection, gpus)
+        let (selection, claims) =
+            select_and_claim(&gpus, &criteria, manual_gpu_indices.as_deref(), &locks)?;
+        (selection, gpus, claims)
     };
 
     print_selection(&display_gpus, &selection);
-
-    // Keep each claim alive until exec transfers its file descriptor to the command.
-    let mut claims = Vec::with_capacity(selection.gpu_indices.len());
-    for &gpu_index in &selection.gpu_indices {
-        match lockfile::claim_gpu(gpu_index) {
-            Ok(claim) => claims.push(claim),
-            Err(error) => {
-                anyhow::bail!(
-                    "Failed to claim GPU {}: {} (try again, another process may have claimed it)",
-                    gpu_index,
-                    error
-                );
-            }
-        }
-    }
 
     let result = execute_command(&cli.command, &selection);
     drop(claims);
     result
 }
 
+fn select_and_claim(
+    gpus: &[GpuInfo],
+    criteria: &selector::SelectionCriteria,
+    manual_gpu_indices: Option<&[usize]>,
+    locks: &lockfile::LockManager,
+) -> Result<(GpuSelection, Vec<lockfile::GpuClaim>)> {
+    let selection = if let Some(indices) = manual_gpu_indices {
+        selector::select_manual_gpus(gpus, indices, criteria, locks)?
+    } else {
+        selector::select_gpus(gpus, criteria, locks)?
+    };
+    let claims = locks.claim_gpus(&selection.gpu_indices).with_context(|| {
+        format!(
+            "Failed to claim selected GPU set {}",
+            selection.to_cuda_visible_devices()
+        )
+    })?;
+    Ok((selection, claims))
+}
+
 fn wait_for_gpus(
+    provider: &impl nvidia::GpuProvider,
+    locks: &lockfile::LockManager,
     criteria: &selector::SelectionCriteria,
     timeout_secs: Option<u64>,
     manual_gpu_indices: Option<&[usize]>,
-) -> Result<(GpuSelection, Vec<GpuInfo>)> {
+) -> Result<(GpuSelection, Vec<GpuInfo>, Vec<lockfile::GpuClaim>)> {
+    wait_for_gpus_with_poll_interval(
+        provider,
+        locks,
+        criteria,
+        timeout_secs,
+        manual_gpu_indices,
+        Duration::from_secs(5),
+    )
+}
+
+fn wait_for_gpus_with_poll_interval(
+    provider: &impl nvidia::GpuProvider,
+    locks: &lockfile::LockManager,
+    criteria: &selector::SelectionCriteria,
+    timeout_secs: Option<u64>,
+    manual_gpu_indices: Option<&[usize]>,
+    poll_interval: Duration,
+) -> Result<(GpuSelection, Vec<GpuInfo>, Vec<lockfile::GpuClaim>)> {
     let start_time = Instant::now();
-    let poll_interval = Duration::from_secs(5);
     let timeout = timeout_secs.map(Duration::from_secs);
     let mut attempt = 1;
 
@@ -223,22 +275,17 @@ fn wait_for_gpus(
     eprintln!();
 
     loop {
-        let all_gpus = nvidia::query_gpus()?;
-
-        let selection_result = if let Some(indices) = manual_gpu_indices {
-            selector::select_manual_gpus(&all_gpus, indices, criteria)
-        } else {
-            selector::select_gpus(&all_gpus, criteria)
-        };
+        let all_gpus = provider.query_gpus()?;
+        let selection_result = select_and_claim(&all_gpus, criteria, manual_gpu_indices, locks);
 
         match selection_result {
-            Ok(selection) => {
+            Ok((selection, claims)) => {
                 eprintln!(
                     "GPUs available after {} attempts ({:.1}s)",
                     attempt,
                     start_time.elapsed().as_secs_f64()
                 );
-                return Ok((selection, all_gpus));
+                return Ok((selection, all_gpus, claims));
             }
             Err(e) => {
                 if let Some(timeout) = timeout {
@@ -309,7 +356,7 @@ struct GpuStatus<'a> {
     claimed_by_pid: Option<u32>,
 }
 
-fn print_status(gpus: &[GpuInfo], json: bool) -> Result<()> {
+fn print_status(gpus: &[GpuInfo], json: bool, locks: &lockfile::LockManager) -> Result<()> {
     if gpus.is_empty() {
         #[cfg(target_os = "macos")]
         {
@@ -324,7 +371,7 @@ fn print_status(gpus: &[GpuInfo], json: bool) -> Result<()> {
         }
     }
 
-    let claimed_gpus = lockfile::get_claimed_gpus();
+    let claimed_gpus = locks.get_claimed_gpus();
 
     if json {
         let statuses = gpus
@@ -447,6 +494,33 @@ fn execute_command_without_gpus(command_parts: &[String]) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::cell::RefCell;
+    use std::collections::VecDeque;
+
+    struct FixtureProvider {
+        states: RefCell<VecDeque<Vec<GpuInfo>>>,
+    }
+
+    impl nvidia::GpuProvider for FixtureProvider {
+        fn query_gpus(&self) -> Result<Vec<GpuInfo>> {
+            self.states
+                .borrow_mut()
+                .pop_front()
+                .context("fixture provider exhausted")
+        }
+    }
+
+    fn fixture_gpu(memory_used_mb: u64) -> GpuInfo {
+        GpuInfo {
+            index: 0,
+            name: "Fixture GPU".to_string(),
+            memory_used_mb,
+            memory_total_mb: 24_000,
+            utilization_percent: 0,
+            process_count: usize::from(memory_used_mb > 0),
+            hidden_usage_mb: 0,
+        }
+    }
 
     #[test]
     fn polling_sleep_does_not_overshoot_timeout() {
@@ -457,5 +531,38 @@ mod tests {
         );
 
         assert_eq!(delay, Duration::from_millis(750));
+    }
+
+    #[test]
+    fn count_parser_rejects_zero() {
+        assert!(parse_positive_usize("0").is_err());
+        assert_eq!(parse_positive_usize("2").unwrap(), 2);
+    }
+
+    #[test]
+    fn wait_requeries_fixture_provider_until_selection_can_be_claimed() {
+        let provider = FixtureProvider {
+            states: RefCell::new(VecDeque::from([
+                vec![fixture_gpu(23_000)],
+                vec![fixture_gpu(0)],
+            ])),
+        };
+        let lock_dir =
+            std::env::temp_dir().join(format!("with-gpu-wait-test-{}", std::process::id()));
+        let locks = lockfile::LockManager::new(&lock_dir);
+
+        let (selection, _, claims) = wait_for_gpus_with_poll_interval(
+            &provider,
+            &locks,
+            &selector::SelectionCriteria::default(),
+            Some(1),
+            None,
+            Duration::ZERO,
+        )
+        .unwrap();
+
+        assert_eq!(selection.gpu_indices, vec![0]);
+        drop(claims);
+        std::fs::remove_dir_all(lock_dir).unwrap();
     }
 }

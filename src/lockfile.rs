@@ -17,8 +17,63 @@ use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 const LOCK_DIR_MODE: u32 = 0o1777;
 const LOCK_FILE_MODE: u32 = 0o666;
 
-fn lock_dir() -> PathBuf {
-    PathBuf::from("/tmp/with-gpu")
+#[derive(Debug, Clone)]
+pub struct LockManager {
+    dir: PathBuf,
+}
+
+impl LockManager {
+    pub fn new(dir: impl Into<PathBuf>) -> Self {
+        Self { dir: dir.into() }
+    }
+
+    pub fn is_gpu_available(&self, gpu_index: usize) -> bool {
+        matches!(inspect_claim(&self.dir, gpu_index), Ok(None))
+    }
+
+    pub fn claim_gpu(&self, gpu_index: usize) -> Result<GpuClaim, ClaimError> {
+        claim_gpu_in(&self.dir, gpu_index)
+    }
+
+    /// Claim a set as one logical operation. If any claim fails, earlier claims
+    /// are released before the error is returned.
+    pub fn claim_gpus(&self, gpu_indices: &[usize]) -> Result<Vec<GpuClaim>, ClaimError> {
+        let mut ordered_indices = gpu_indices.to_vec();
+        ordered_indices.sort_unstable();
+        ordered_indices.dedup();
+
+        let mut claims = Vec::with_capacity(ordered_indices.len());
+        for gpu_index in ordered_indices {
+            claims.push(self.claim_gpu(gpu_index)?);
+        }
+        Ok(claims)
+    }
+
+    pub fn get_claimed_gpus(&self) -> Vec<(usize, u32)> {
+        let entries = match fs::read_dir(&self.dir) {
+            Ok(entries) => entries,
+            Err(_) => return Vec::new(),
+        };
+
+        let mut claimed = Vec::new();
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if let Some(gpu_index) = path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .and_then(|name| name.strip_prefix("gpu-"))
+                .and_then(|name| name.strip_suffix(".lock"))
+                .and_then(|index| index.parse::<usize>().ok())
+            {
+                if let Ok(Some(pid)) = inspect_claim(&self.dir, gpu_index) {
+                    claimed.push((gpu_index, pid));
+                }
+            }
+        }
+
+        claimed.sort_by_key(|(index, _)| *index);
+        claimed
+    }
 }
 
 fn lock_path(dir: &Path, gpu_index: usize) -> PathBuf {
@@ -40,7 +95,17 @@ fn ensure_lock_dir(dir: &Path) -> std::io::Result<()> {
     {
         let current_mode = metadata.permissions().mode() & 0o7777;
         if current_mode != LOCK_DIR_MODE {
-            fs::set_permissions(dir, fs::Permissions::from_mode(LOCK_DIR_MODE))?;
+            fs::set_permissions(dir, fs::Permissions::from_mode(LOCK_DIR_MODE)).map_err(
+                |error| {
+                    std::io::Error::new(
+                        error.kind(),
+                        format!(
+                            "cannot make {} a shared lock directory (mode {:04o}): {}; fix its ownership/permissions or use --lock-dir",
+                            dir.display(), current_mode, error
+                        ),
+                    )
+                },
+            )?;
         }
     }
 
@@ -160,20 +225,12 @@ fn inspect_claim(dir: &Path, gpu_index: usize) -> std::io::Result<Option<u32>> {
     Ok(read_pid(&mut file).filter(|pid| is_pid_alive(*pid)))
 }
 
-pub fn is_gpu_available(gpu_index: usize) -> bool {
-    matches!(inspect_claim(&lock_dir(), gpu_index), Ok(None))
-}
-
 /// A claim remains active while this value, or its inherited file descriptor,
 /// remains alive.
 pub struct GpuClaim {
     _file: File,
     #[cfg(not(unix))]
     path: PathBuf,
-}
-
-pub fn claim_gpu(gpu_index: usize) -> Result<GpuClaim, ClaimError> {
-    claim_gpu_in(&lock_dir(), gpu_index)
 }
 
 fn claim_gpu_in(dir: &Path, gpu_index: usize) -> Result<GpuClaim, ClaimError> {
@@ -220,33 +277,6 @@ impl Drop for GpuClaim {
     fn drop(&mut self) {
         let _ = fs::remove_file(&self.path);
     }
-}
-
-pub fn get_claimed_gpus() -> Vec<(usize, u32)> {
-    let dir = lock_dir();
-    let entries = match fs::read_dir(&dir) {
-        Ok(entries) => entries,
-        Err(_) => return Vec::new(),
-    };
-
-    let mut claimed = Vec::new();
-    for entry in entries.flatten() {
-        let path = entry.path();
-        if let Some(gpu_index) = path
-            .file_name()
-            .and_then(|name| name.to_str())
-            .and_then(|name| name.strip_prefix("gpu-"))
-            .and_then(|name| name.strip_suffix(".lock"))
-            .and_then(|index| index.parse::<usize>().ok())
-        {
-            if let Ok(Some(pid)) = inspect_claim(&dir, gpu_index) {
-                claimed.push((gpu_index, pid));
-            }
-        }
-    }
-
-    claimed.sort_by_key(|(index, _)| *index);
-    claimed
 }
 
 #[derive(Debug)]
@@ -326,6 +356,22 @@ mod tests {
         assert_eq!(file_mode, LOCK_FILE_MODE);
 
         drop(claim);
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn failed_set_claim_releases_partial_claims() {
+        let dir = test_dir("atomic-set");
+        let manager = LockManager::new(&dir);
+        let blocking_claim = manager.claim_gpu(2).unwrap();
+
+        assert!(matches!(
+            manager.claim_gpus(&[1, 2]),
+            Err(ClaimError::AlreadyClaimed { gpu_index: 2, .. })
+        ));
+        assert!(manager.is_gpu_available(1));
+
+        drop(blocking_claim);
         fs::remove_dir_all(dir).unwrap();
     }
 }
