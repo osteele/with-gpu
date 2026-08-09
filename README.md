@@ -1,5 +1,14 @@
 # with-gpu
 
+[![Crates.io](https://img.shields.io/crates/v/with-gpu.svg)](https://crates.io/crates/with-gpu)
+[![CI](https://github.com/osteele/with-gpu/actions/workflows/ci.yml/badge.svg)](https://github.com/osteele/with-gpu/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+[![Rust 1.85+](https://img.shields.io/badge/rust-1.85%2B-orange.svg)](https://www.rust-lang.org)
+
+<p align="center">
+  <img src="docs/mascot.png" alt="with-gpu mascot" width="300" />
+</p>
+
 Intelligent GPU selection wrapper for CUDA commands. Automatically selects GPUs with the most available memory, then sets `CUDA_VISIBLE_DEVICES` and executes your command.
 
 ## Features
@@ -7,9 +16,10 @@ Intelligent GPU selection wrapper for CUDA commands. Automatically selects GPUs 
 - 🧠 **Memory-first selection**: Prioritizes GPUs with most available VRAM (prevents OOM errors)
 - 🎯 **Smart fallback**: Uses non-idle GPUs with free memory when no idle GPUs available
 - 🖥️ **Multi-GPU support**: Request minimum and maximum number of GPUs
+- 🏷️ **GPU type filtering**: Prefer or require a GPU model by name
 - 🎛️ **Manual selection**: Specify exact GPU IDs when needed
 - ⏱️ **Wait capability**: Poll for GPU availability with configurable timeout
-- 📊 **Status display**: View all GPUs and their current usage
+- 📊 **Status display**: View model names and usage as text or JSON
 - ⚠️ **Warning messages**: Get notified when using non-idle GPUs
 - 🔒 **Cooperative claims**: Prevents concurrent `with-gpu` commands from selecting the same GPU
 - 🍎 **Cross-platform**: Works on Linux (with NVIDIA GPUs) and macOS (no-op mode)

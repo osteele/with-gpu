@@ -108,8 +108,11 @@ exclusion and permissions, and wait timeout calculations. Run them with:
 cargo test
 ```
 
-NVML and CUDA integration still requires NVIDIA hardware, so those paths need a
-manual smoke test on a GPU host.
+CI runs formatting, Clippy, and tests on Linux and macOS, checks the declared
+Rust 1.85 minimum, audits dependencies, and keeps Cargo and GitHub Actions
+dependencies current through Dependabot. NVML and CUDA integration requires
+NVIDIA hardware; the manual `GPU smoke test` workflow targets a self-hosted
+runner labeled `linux` and `gpu`.
 
 **Testing Approach:**
 
@@ -120,7 +123,7 @@ manual smoke test on a GPU host.
 4. Test edge cases: no GPUs, all GPUs busy, invalid GPU IDs
 
 **Future Improvements:**
-- Add integration tests that run on CI machines with GPUs
+- Run the GPU smoke workflow on a maintained self-hosted runner
 - Add property-based tests for selection algorithms
 
 ### Local Testing (macOS)

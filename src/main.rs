@@ -357,20 +357,6 @@ struct GpuStatus<'a> {
 }
 
 fn print_status(gpus: &[GpuInfo], json: bool, locks: &lockfile::LockManager) -> Result<()> {
-    if gpus.is_empty() {
-        #[cfg(target_os = "macos")]
-        {
-            println!("No NVIDIA GPUs available (running on macOS)");
-            println!("Commands will execute without GPU selection.");
-            return Ok(());
-        }
-        #[cfg(not(target_os = "macos"))]
-        {
-            println!("No GPUs detected");
-            return Ok(());
-        }
-    }
-
     let claimed_gpus = locks.get_claimed_gpus();
 
     if json {
@@ -389,6 +375,20 @@ fn print_status(gpus: &[GpuInfo], json: bool, locks: &lockfile::LockManager) -> 
             .collect::<Vec<_>>();
         println!("{}", serde_json::to_string_pretty(&statuses)?);
         return Ok(());
+    }
+
+    if gpus.is_empty() {
+        #[cfg(target_os = "macos")]
+        {
+            println!("No NVIDIA GPUs available (running on macOS)");
+            println!("Commands will execute without GPU selection.");
+            return Ok(());
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            println!("No GPUs detected");
+            return Ok(());
+        }
     }
 
     println!("Available GPUs:");
