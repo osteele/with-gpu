@@ -5,6 +5,9 @@
 
 use anyhow::{anyhow, Result};
 use std::ffi::OsString;
+use std::ptr;
+
+use cudarc::driver::{result, sys};
 
 struct RemovedEnvironmentVariable {
     name: &'static str,
@@ -32,9 +35,50 @@ impl Drop for RemovedEnvironmentVariable {
 /// Memory information for a single GPU.
 #[derive(Debug, Clone)]
 pub struct CudaMemoryInfo {
-    pub device_index: usize,
+    pub device_uuid: String,
     pub free_bytes: u64,
     pub total_bytes: u64,
+}
+
+struct PrimaryContextGuard {
+    device: sys::CUdevice,
+    previous: Option<sys::CUcontext>,
+}
+
+impl PrimaryContextGuard {
+    fn retain_and_activate(device: sys::CUdevice, device_index: usize) -> Result<Self> {
+        let previous = result::ctx::get_current()
+            .map_err(|error| anyhow!("Failed to get current CUDA context: {error:?}"))?;
+        // SAFETY: device came from CUDA's device::get.
+        let context = unsafe { result::primary_ctx::retain(device) }.map_err(|error| {
+            anyhow!("Failed to retain CUDA context for device {device_index}: {error:?}")
+        })?;
+        let guard = Self { device, previous };
+        // SAFETY: context was returned by primary_ctx::retain and remains retained
+        // for the lifetime of guard.
+        unsafe { result::ctx::set_current(context) }
+            .map_err(|error| anyhow!("Failed to set CUDA context as current: {error:?}"))?;
+        Ok(guard)
+    }
+}
+
+impl Drop for PrimaryContextGuard {
+    fn drop(&mut self) {
+        let previous = self.previous.unwrap_or(ptr::null_mut());
+        // SAFETY: the previous context, when present, was returned by CUDA. CUDA
+        // accepts a null context to clear the current context.
+        let _ = unsafe { result::ctx::set_current(previous) };
+        // SAFETY: this balances the successful primary_ctx::retain in the
+        // constructor.
+        let _ = unsafe { result::primary_ctx::release(self.device) };
+    }
+}
+
+fn format_uuid(uuid: sys::CUuuid) -> String {
+    uuid.bytes
+        .iter()
+        .map(|byte| format!("{:02x}", *byte as u8))
+        .collect()
 }
 
 impl CudaMemoryInfo {
@@ -56,33 +100,17 @@ impl CudaMemoryInfo {
 /// This creates a CUDA context on the device, queries memory, then releases the context.
 /// More accurate than NVML's memory_info() which can return stale data.
 pub fn query_device_memory(device_index: usize) -> Result<CudaMemoryInfo> {
-    use cudarc::driver::result;
-
     // Initialize CUDA driver API (safe to call multiple times)
     result::init().map_err(|e| anyhow!("Failed to initialize CUDA driver: {:?}", e))?;
 
     // Get device handle
     let device = result::device::get(device_index as i32)
         .map_err(|e| anyhow!("Failed to get CUDA device {}: {:?}", device_index, e))?;
+    let device_uuid = result::device::get_uuid(device)
+        .map(format_uuid)
+        .map_err(|error| anyhow!("Failed to get UUID for CUDA device {device_index}: {error:?}"))?;
 
-    // Create/retain a primary context for this device
-    // SAFETY: device is a valid device handle obtained from device::get
-    let ctx = unsafe {
-        result::primary_ctx::retain(device).map_err(|e| {
-            anyhow!(
-                "Failed to create CUDA context for device {}: {:?}",
-                device_index,
-                e
-            )
-        })?
-    };
-
-    // Push context to make it current
-    // SAFETY: ctx is a valid context obtained from primary_ctx::retain
-    unsafe {
-        result::ctx::set_current(ctx)
-            .map_err(|e| anyhow!("Failed to set CUDA context as current: {:?}", e))?;
-    }
+    let _context = PrimaryContextGuard::retain_and_activate(device, device_index)?;
 
     // Query memory info using the result module's wrapper
     let (free, total) = result::mem_get_info().map_err(|e| {
@@ -93,15 +121,8 @@ pub fn query_device_memory(device_index: usize) -> Result<CudaMemoryInfo> {
         )
     })?;
 
-    // Release the primary context (decrements refcount, doesn't destroy)
-    // SAFETY: device is a valid device handle
-    unsafe {
-        result::primary_ctx::release(device)
-            .map_err(|e| anyhow!("Failed to release CUDA context: {:?}", e))?;
-    }
-
     Ok(CudaMemoryInfo {
-        device_index,
+        device_uuid,
         free_bytes: free as u64,
         total_bytes: total as u64,
     })
@@ -109,8 +130,6 @@ pub fn query_device_memory(device_index: usize) -> Result<CudaMemoryInfo> {
 
 /// Query memory info for all GPUs.
 pub fn query_all_device_memory() -> Result<Vec<CudaMemoryInfo>> {
-    use cudarc::driver::result;
-
     // CUDA ordinals are filtered and reordered by CUDA_VISIBLE_DEVICES, while
     // NVML indices are physical. Query the unfiltered device list so the two
     // APIs describe the same ordinal space. The launched command receives its

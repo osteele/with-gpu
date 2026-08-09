@@ -22,6 +22,10 @@ src/
    - Queries GPU memory, utilization, and process counts via NVML
    - More reliable than parsing nvidia-smi output
    - Works even when nvidia-smi is replaced/wrapped (as on cool30)
+   - Joins CUDA memory readings to NVML devices by UUID, so different ordinal
+     visibility or ordering cannot attach memory data to the wrong GPU
+   - Restores the previous CUDA context and releases retained primary contexts
+     through an RAII guard on both success and error paths
 
 2. **Selection algorithm** (memory-first):
    - **Primary criterion**: Most available memory (free VRAM in MB, descending)

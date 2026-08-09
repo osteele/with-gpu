@@ -11,6 +11,16 @@ use nvml_wrapper::Nvml;
 #[cfg(not(target_os = "macos"))]
 use crate::cuda;
 
+#[cfg(not(target_os = "macos"))]
+fn normalize_uuid(uuid: &str) -> String {
+    uuid.strip_prefix("GPU-")
+        .unwrap_or(uuid)
+        .chars()
+        .filter(|character| character.is_ascii_hexdigit())
+        .flat_map(char::to_lowercase)
+        .collect()
+}
+
 pub trait GpuProvider {
     fn query_gpus(&self) -> Result<Vec<GpuInfo>>;
 }
@@ -50,6 +60,9 @@ pub fn query_gpus() -> Result<Vec<GpuInfo>> {
             let name = device
                 .name()
                 .context(format!("Failed to get name for GPU {}", i))?;
+            let uuid = device
+                .uuid()
+                .context(format!("Failed to get UUID for GPU {}", i))?;
 
             // Get NVML memory info as fallback
             let nvml_memory_info = device
@@ -57,8 +70,9 @@ pub fn query_gpus() -> Result<Vec<GpuInfo>> {
                 .context(format!("Failed to get memory info for GPU {}", i))?;
 
             // Prefer CUDA memory info if available (more accurate)
-            let (memory_used_mb, memory_total_mb) = if let Some(cuda_info) =
-                cuda_memory.iter().find(|m| m.device_index == i as usize)
+            let (memory_used_mb, memory_total_mb) = if let Some(cuda_info) = cuda_memory
+                .iter()
+                .find(|memory| memory.device_uuid == normalize_uuid(&uuid))
             {
                 (cuda_info.used_mb(), cuda_info.total_mb())
             } else {
