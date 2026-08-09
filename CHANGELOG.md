@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- Upgrade `clap`, `anyhow`, `libc`, `nvml-wrapper`, `cudarc`, and transitive dependencies
+
 ### Fixed
 - Preserve every manually selected GPU and its requested order
 - Make GPU claims atomic, process-lifetime-bound, and usable across local users

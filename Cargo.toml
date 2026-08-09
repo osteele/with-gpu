@@ -15,12 +15,12 @@ name = "with-gpu"
 path = "src/main.rs"
 
 [dependencies]
-clap = { version = "4.5", features = ["derive"] }
+clap = { version = "4.6", features = ["derive"] }
 anyhow = "1.0"
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
 
 [target.'cfg(not(target_os = "macos"))'.dependencies]
-nvml-wrapper = "0.10"
-cudarc = { version = "0.12", default-features = false, features = ["driver", "cuda-12000"] }
+nvml-wrapper = "0.12"
+cudarc = { version = "0.19", default-features = false, features = ["driver", "cuda-12000", "dynamic-loading"] }

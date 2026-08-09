@@ -46,10 +46,6 @@ impl CudaMemoryInfo {
         self.used_bytes() / (1024 * 1024)
     }
 
-    pub fn free_mb(&self) -> u64 {
-        self.free_bytes / (1024 * 1024)
-    }
-
     pub fn total_mb(&self) -> u64 {
         self.total_bytes / (1024 * 1024)
     }
