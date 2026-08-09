@@ -6,6 +6,7 @@ mod selector;
 
 use anyhow::{Context, Result};
 use clap::Parser;
+use serde::Serialize;
 #[cfg(unix)]
 use std::os::unix::process::CommandExt;
 use std::process::Command;
@@ -59,6 +60,19 @@ struct Cli {
 
     #[arg(
         long,
+        help = "Prefer GPU model names containing this text (case-insensitive)"
+    )]
+    gpu_type: Option<String>,
+
+    #[arg(
+        long,
+        requires = "gpu_type",
+        help = "Require --gpu-type to match instead of falling back to another model"
+    )]
+    strict: bool,
+
+    #[arg(
+        long,
         help = "Wait for GPUs to become available if not immediately available"
     )]
     wait: bool,
@@ -72,6 +86,9 @@ struct Cli {
 
     #[arg(long, help = "Show GPU status and exit")]
     status: bool,
+
+    #[arg(long, requires = "status", help = "Output --status data as JSON")]
+    json: bool,
 
     #[arg(
         trailing_var_arg = true,
@@ -101,7 +118,7 @@ fn main() -> Result<()> {
     let gpus = nvidia::query_gpus()?;
 
     if cli.status {
-        print_status(&gpus);
+        print_status(&gpus, cli.json)?;
         return Ok(());
     }
 
@@ -136,6 +153,8 @@ fn main() -> Result<()> {
         require_idle: cli.require_idle,
         min_memory_mb: cli.min_memory.or(Some(2048)),
         max_utilization: cli.max_util,
+        gpu_type_pattern: cli.gpu_type.clone(),
+        require_type_match: cli.strict,
     };
 
     // Parse manual GPU selection if provided
@@ -280,22 +299,50 @@ fn polling_sleep_duration(
         .unwrap_or(poll_interval)
 }
 
-fn print_status(gpus: &[GpuInfo]) {
+#[derive(Serialize)]
+struct GpuStatus<'a> {
+    #[serde(flatten)]
+    gpu: &'a GpuInfo,
+    is_idle: bool,
+    memory_free_mb: u64,
+    memory_usage_percent: f64,
+    claimed_by_pid: Option<u32>,
+}
+
+fn print_status(gpus: &[GpuInfo], json: bool) -> Result<()> {
     if gpus.is_empty() {
         #[cfg(target_os = "macos")]
         {
             println!("No NVIDIA GPUs available (running on macOS)");
             println!("Commands will execute without GPU selection.");
-            return;
+            return Ok(());
         }
         #[cfg(not(target_os = "macos"))]
         {
             println!("No GPUs detected");
-            return;
+            return Ok(());
         }
     }
 
     let claimed_gpus = lockfile::get_claimed_gpus();
+
+    if json {
+        let statuses = gpus
+            .iter()
+            .map(|gpu| GpuStatus {
+                gpu,
+                is_idle: gpu.is_idle(),
+                memory_free_mb: gpu.memory_free_mb(),
+                memory_usage_percent: gpu.memory_usage_percent(),
+                claimed_by_pid: claimed_gpus
+                    .iter()
+                    .find(|(index, _)| *index == gpu.index)
+                    .map(|(_, pid)| *pid),
+            })
+            .collect::<Vec<_>>();
+        println!("{}", serde_json::to_string_pretty(&statuses)?);
+        return Ok(());
+    }
 
     println!("Available GPUs:");
     for gpu in gpus {
@@ -320,6 +367,7 @@ fn print_status(gpus: &[GpuInfo]) {
             claimed_gpus.len()
         );
     }
+    Ok(())
 }
 
 fn print_selection(gpus: &[GpuInfo], selection: &GpuSelection) {

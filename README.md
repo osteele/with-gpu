@@ -76,6 +76,21 @@ with-gpu --max-gpus 4 python train.py
 with-gpu --min-gpus 2 --max-gpus 4 python train.py
 ```
 
+### Prefer a GPU Model
+
+Prefer model names containing a case-insensitive substring, with fallback to any
+otherwise suitable GPU:
+
+```bash
+with-gpu --gpu-type 4090 python train.py
+```
+
+Add `--strict` to fail (or continue waiting) unless that model is available:
+
+```bash
+with-gpu --gpu-type A100 --strict --wait python train.py
+```
+
 ### Require Idle GPUs
 
 Enforce idle-only selection (no non-idle GPUs even if they have more free memory):
@@ -138,6 +153,9 @@ View all GPUs and their current usage:
 
 ```bash
 with-gpu --status
+
+# JSON array suitable for scripts
+with-gpu --status --json
 ```
 
 Output example:

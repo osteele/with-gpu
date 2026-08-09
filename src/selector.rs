@@ -10,6 +10,8 @@ pub struct SelectionCriteria {
     pub require_idle: bool,
     pub min_memory_mb: Option<u64>,
     pub max_utilization: Option<u8>,
+    pub gpu_type_pattern: Option<String>,
+    pub require_type_match: bool,
 }
 
 impl Default for SelectionCriteria {
@@ -20,6 +22,8 @@ impl Default for SelectionCriteria {
             require_idle: false,
             min_memory_mb: Some(2048),
             max_utilization: None,
+            gpu_type_pattern: None,
+            require_type_match: false,
         }
     }
 }
@@ -29,9 +33,37 @@ pub fn select_gpus(gpus: &[GpuInfo], criteria: &SelectionCriteria) -> Result<Gpu
         anyhow::bail!("No GPUs detected");
     }
 
+    if let Some(pattern) = &criteria.gpu_type_pattern {
+        let matching = gpus
+            .iter()
+            .filter(|gpu| gpu.matches_type(pattern))
+            .collect::<Vec<_>>();
+        if matching.is_empty() && criteria.require_type_match {
+            anyhow::bail!(
+                "No GPUs found matching type '{}' (use --status to see available GPUs)",
+                pattern
+            );
+        }
+        if !matching.is_empty() {
+            match select_from_candidates(&matching, criteria) {
+                Ok(selection) => return Ok(selection),
+                Err(error) if criteria.require_type_match => return Err(error),
+                Err(_) => {}
+            }
+        }
+    }
+
+    select_from_candidates(&gpus.iter().collect::<Vec<_>>(), criteria)
+}
+
+fn select_from_candidates(
+    candidate_gpus: &[&GpuInfo],
+    criteria: &SelectionCriteria,
+) -> Result<GpuSelection> {
     // Apply threshold filters and exclude claimed GPUs
-    let filtered_gpus: Vec<&GpuInfo> = gpus
+    let filtered_gpus: Vec<&GpuInfo> = candidate_gpus
         .iter()
+        .copied()
         .filter(|gpu| {
             // Filter out GPUs claimed by other processes
             if !lockfile::is_gpu_available(gpu.index) {
@@ -67,7 +99,7 @@ pub fn select_gpus(gpus: &[GpuInfo], criteria: &SelectionCriteria) -> Result<Gpu
                 claimed.len()
             ));
         }
-        let hidden_count = gpus
+        let hidden_count = candidate_gpus
             .iter()
             .filter(|g| g.has_hidden_usage(HIDDEN_USAGE_THRESHOLD_MB))
             .count();
@@ -306,6 +338,7 @@ mod tests {
     fn make_gpu(index: usize, memory_used_mb: u64) -> GpuInfo {
         GpuInfo {
             index,
+            name: format!("Test GPU {index}"),
             memory_used_mb,
             memory_total_mb: 24_000,
             utilization_percent: 0,
@@ -336,6 +369,36 @@ mod tests {
             .unwrap_err();
 
         assert!(error.to_string().contains("listed more than once"));
+    }
+
+    #[test]
+    fn preferred_gpu_type_falls_back_when_match_is_unusable() {
+        let mut preferred = make_gpu(0, 23_500);
+        preferred.name = "RTX 4090".to_string();
+        let mut fallback = make_gpu(1, 0);
+        fallback.name = "RTX 3090".to_string();
+        let criteria = SelectionCriteria {
+            gpu_type_pattern: Some("4090".to_string()),
+            ..SelectionCriteria::default()
+        };
+
+        let selection = select_gpus(&[preferred, fallback], &criteria).unwrap();
+        assert_eq!(selection.gpu_indices, vec![1]);
+    }
+
+    #[test]
+    fn strict_gpu_type_does_not_fall_back() {
+        let gpu = make_gpu(0, 0);
+        let criteria = SelectionCriteria {
+            gpu_type_pattern: Some("A100".to_string()),
+            require_type_match: true,
+            ..SelectionCriteria::default()
+        };
+
+        assert!(select_gpus(&[gpu], &criteria)
+            .unwrap_err()
+            .to_string()
+            .contains("matching type"));
     }
 
     #[test]

@@ -35,6 +35,9 @@ pub fn query_gpus() -> Result<Vec<GpuInfo>> {
             let device = nvml
                 .device_by_index(i)
                 .context(format!("Failed to get GPU {}", i))?;
+            let name = device
+                .name()
+                .context(format!("Failed to get name for GPU {}", i))?;
 
             // Get NVML memory info as fallback
             let nvml_memory_info = device
@@ -83,6 +86,7 @@ pub fn query_gpus() -> Result<Vec<GpuInfo>> {
 
             gpus.push(GpuInfo {
                 index,
+                name,
                 memory_used_mb,
                 memory_total_mb,
                 utilization_percent,

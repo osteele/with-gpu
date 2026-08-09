@@ -1,8 +1,10 @@
+use serde::Serialize;
 use std::fmt;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
 pub struct GpuInfo {
     pub index: usize,
+    pub name: String,
     pub memory_used_mb: u64,
     pub memory_total_mb: u64,
     pub utilization_percent: u8,
@@ -42,6 +44,10 @@ impl GpuInfo {
             (self.memory_used_mb as f64 / self.memory_total_mb as f64) * 100.0
         }
     }
+
+    pub fn matches_type(&self, pattern: &str) -> bool {
+        self.name.to_lowercase().contains(&pattern.to_lowercase())
+    }
 }
 
 impl fmt::Display for GpuInfo {
@@ -49,8 +55,9 @@ impl fmt::Display for GpuInfo {
         let status = if self.is_idle() { "IDLE" } else { "USED" };
         write!(
             f,
-            "GPU {}: {} - {}/{} MB ({:.1}%), {} util, {} processes",
+            "GPU {}: [{}] {} - {}/{} MB ({:.1}%), {} util, {} processes",
             self.index,
+            self.name,
             status,
             self.memory_used_mb,
             self.memory_total_mb,
@@ -94,6 +101,7 @@ mod tests {
     ) -> GpuInfo {
         GpuInfo {
             index,
+            name: format!("Test GPU {index}"),
             memory_used_mb,
             memory_total_mb: 24000,
             utilization_percent: 0,
@@ -145,5 +153,15 @@ mod tests {
         let gpu = make_gpu(0, 600, 1, 100);
         let display = format!("{}", gpu);
         assert!(!display.contains("hidden usage"));
+    }
+
+    #[test]
+    fn gpu_type_matching_is_case_insensitive() {
+        let mut gpu = make_gpu(0, 0, 0, 0);
+        gpu.name = "GeForce RTX 4090".to_string();
+
+        assert!(gpu.matches_type("rtx 4090"));
+        assert!(gpu.matches_type("GEFORCE"));
+        assert!(!gpu.matches_type("3090"));
     }
 }
