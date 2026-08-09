@@ -10,7 +10,7 @@ jobs:
   smoke:
     runs-on: [self-hosted, linux, gpu]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
       - run: cargo test --all-targets --locked
       - name: Query real GPU state
