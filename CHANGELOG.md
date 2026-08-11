@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-08-11
+
 ### Added
 - GPU model preference with `--gpu-type` and strict matching with `--strict`
 - Machine-readable `--status --json` output including GPU model and claim data
@@ -25,6 +27,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Restore and release CUDA contexts on every query path
 - Keep wait polling within the requested timeout
 - Refresh the dependency lockfile and development documentation
+- Preserve Rust 1.85 compatibility across the locked dependency graph
 
 ## [0.4.0] - 2025-12-11
 
@@ -100,8 +103,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - NVML-based GPU querying for reliability
 - Process replacement via `exec()` to preserve stdio
 
+[Unreleased]: https://github.com/osteele/with-gpu/compare/v0.5.0...HEAD
+[0.5.0]: https://github.com/osteele/with-gpu/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/osteele/with-gpu/compare/v0.3.0...v0.4.0
-[Unreleased]: https://github.com/osteele/with-gpu/compare/v0.4.0...HEAD
 [0.3.0]: https://github.com/osteele/with-gpu/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/osteele/with-gpu/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/osteele/with-gpu/releases/tag/v0.1.0
