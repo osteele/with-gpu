@@ -13,8 +13,8 @@ Intelligent GPU selection wrapper for CUDA commands. Automatically selects GPUs 
 
 ## Features
 
-- 🧠 **Memory-first selection**: Prioritizes GPUs with most available VRAM (prevents OOM errors)
-- 🎯 **Smart fallback**: Uses non-idle GPUs with free memory when no idle GPUs available
+- 🧠 **Memory-first selection**: Prioritizes GPUs with the most available VRAM
+- 🎯 **Explicit idle filtering**: Includes non-idle GPUs unless `--require-idle` is set
 - 🖥️ **Multi-GPU support**: Request minimum and maximum number of GPUs
 - 🏷️ **GPU type filtering**: Prefer or require a GPU model by name
 - 🎛️ **Manual selection**: Specify exact GPU IDs when needed
@@ -52,7 +52,8 @@ Select the GPU with most available memory:
 with-gpu python train.py
 ```
 
-This prioritizes available VRAM over idle status, preventing OOM errors.
+This prioritizes available VRAM over idle status. A used GPU with more free
+memory can rank ahead of an idle GPU.
 
 ### Manual GPU Selection
 
@@ -79,7 +80,7 @@ Request a range of GPUs:
 # Need exactly 2 GPUs
 with-gpu --min-gpus 2 python train.py
 
-# Want 1-4 GPUs (use as many idle as available, up to 4)
+# Want 1-4 GPUs (use as many suitable GPUs as available, up to 4)
 with-gpu --max-gpus 4 python train.py
 
 # Need at least 2, prefer up to 4
@@ -133,9 +134,14 @@ with-gpu --max-util 70 python train.py
 with-gpu --min-memory 16000 --max-util 50 python train_llm.py
 ```
 
-**Default behavior**: By default, `with-gpu` requires at least 2 GB free memory to prevent OOM errors. This is sufficient for PyTorch initialization and most models. For small jobs that need less, use `--min-memory 0`.
+**Default behavior**: By default, `with-gpu` requires at least 2 GB free memory.
+This avoids GPUs that are almost full, but the required memory depends on the
+workload. For small jobs that need less, use `--min-memory 0`.
 
-**Ghost process detection**: The idle detection uses a 500 MB threshold, which is sufficient for detecting processes that NVML missed (ghost processes with allocated memory).
+**Idle and hidden usage checks**: A GPU is idle when NVML reports no running
+compute processes and total used memory is below 500 MB. Separately, `with-gpu`
+excludes any GPU with more than 512 MB of memory that cannot be attributed to
+visible NVML processes. This catches GPU usage that NVML's process list missed.
 
 ### Wait for GPUs
 
@@ -143,7 +149,7 @@ Wait for GPUs to become available instead of failing immediately:
 
 ```bash
 # Wait indefinitely for an idle GPU
-with-gpu --wait python train.py
+with-gpu --wait --require-idle python train.py
 
 # Wait up to 300 seconds (5 minutes) for 2 idle GPUs
 with-gpu --wait --timeout 300 --min-gpus 2 --require-idle python train.py
@@ -182,16 +188,18 @@ with-gpu --status --json
 Output example:
 ```
 Available GPUs:
-  GPU 0: USED - 15320/24268 MB (63.1%), 85 util, 3 processes
-  GPU 1: IDLE - 0/24268 MB (0.0%), 0 util, 0 processes
-  GPU 2: USED - 5920/24268 MB (24.4%), 12 util, 1 processes
+  GPU 0: [NVIDIA GeForce RTX 3090] USED - 15320/24268 MB (63.1%), 85 util, 3 processes
+  GPU 1: [NVIDIA GeForce RTX 3090] IDLE - 0/24268 MB (0.0%), 0 util, 0 processes
+  GPU 2: [NVIDIA GeForce RTX 3090] USED - 5920/24268 MB (24.4%), 12 util, 1 processes
 ```
 
 In this example, auto-selection would pick GPU 1 (24 GB free), then GPU 2 (18 GB free), then GPU 0 (9 GB free).
 
 ## How It Works
 
-1. **Queries GPUs**: Uses NVML library to get memory usage, utilization, and running processes for each GPU
+1. **Queries GPUs**: Uses NVML to get model names, utilization, and running
+   processes. Memory usage comes from the CUDA Driver API when available, with
+   NVML as a fallback.
 2. **Threshold Filtering** (before selection):
    - Default: Requires 2 GB free memory (override with `--min-memory`)
    - Optional: Maximum utilization percentage (`--max-util`)
@@ -201,12 +209,14 @@ In this example, auto-selection would pick GPU 1 (24 GB free), then GPU 2 (18 GB
    - **Secondary criterion**: Fewest running processes (ascending)
    - **Tertiary criterion**: Lowest GPU index (ascending)
 4. **Special modes**:
-   - `--require-idle`: Only considers GPUs with 0 processes and <500 MB used (still sorted by available memory)
+   - `--require-idle`: Only considers GPUs with 0 processes and <500 MB total memory used (still sorted by available memory)
    - Manual `--gpu`: Preserves the exact requested IDs and order while applying filters
 5. **Warnings**: Notifies when using non-idle GPUs or GPUs with <2 GB free
 6. **Execution**: Sets `CUDA_VISIBLE_DEVICES` and replaces current process with your command
 
-**Why memory-first?** A GPU with 10 GB free and 1 process is more useful than an "idle" GPU with 300 MB free. This prevents OOM errors that occurred with the old idle-first algorithm.
+Memory-first ranking favors available capacity. A GPU with 10 GB free and 1
+process can rank ahead of an idle GPU with less free memory. By default, GPUs
+with less than 2 GB free are filtered out.
 
 ## Examples
 
@@ -260,8 +270,8 @@ Works with any command that respects `CUDA_VISIBLE_DEVICES`:
 
 Fills the gap between simple utilities and full schedulers:
 - ✅ Executes commands (not just monitoring)
-- ✅ Memory-first selection (prevents OOM errors)
-- ✅ Intelligent fallback (uses non-idle GPUs with free memory)
+- ✅ Memory-first selection with a 2 GB default free-memory floor
+- ✅ Non-idle GPU selection when those GPUs have the most free memory
 - ✅ Wait capability with timeout
 - ✅ Multi-GPU min/max support
 - ✅ Lightweight (single Rust binary)
@@ -286,7 +296,8 @@ or `--wait` when external GPU activity is possible. See
 
 **When you need more**: For guaranteed fair scheduling, priority queues, or resource reservations, use SLURM or Kubernetes.
 
-Designed for **cooperative environments** (small groups, personal workstations) where "find me an idle GPU" is sufficient.
+Designed for **cooperative environments** (small groups, personal workstations)
+where lightweight GPU selection is sufficient.
 
 ## Requirements
 
