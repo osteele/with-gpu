@@ -337,11 +337,19 @@ impl std::error::Error for ClaimError {}
 mod tests {
     use super::*;
     use std::process::{Child, Command};
+    use std::sync::{Mutex, MutexGuard};
     use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
     const HELPER_DIR_ENV: &str = "WITH_GPU_TEST_HELPER_DIR";
     const HELPER_READY_ENV: &str = "WITH_GPU_TEST_HELPER_READY";
     const HELPER_RELEASE_ENV: &str = "WITH_GPU_TEST_HELPER_RELEASE";
+    static CLAIM_TEST_LOCK: Mutex<()> = Mutex::new(());
+
+    fn serialize_claim_test() -> MutexGuard<'static, ()> {
+        CLAIM_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
 
     fn test_dir(name: &str) -> PathBuf {
         let nonce = SystemTime::now()
@@ -403,6 +411,7 @@ mod tests {
 
     #[test]
     fn claim_is_exclusive_and_released_with_guard() {
+        let _test_lock = serialize_claim_test();
         let dir = test_dir("exclusive");
         let claim = claim_gpu_in(&dir, 0).unwrap();
 
@@ -427,6 +436,7 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn shared_paths_have_multi_user_permissions() {
+        let _test_lock = serialize_claim_test();
         let dir = test_dir("permissions");
         let claim = claim_gpu_in(&dir, 3).unwrap();
 
@@ -445,6 +455,7 @@ mod tests {
 
     #[test]
     fn stale_lock_file_can_be_reclaimed() {
+        let _test_lock = serialize_claim_test();
         let dir = test_dir("stale");
         ensure_lock_dir(&dir).unwrap();
         fs::write(lock_path(&dir, 4), "999999").unwrap();
@@ -459,6 +470,7 @@ mod tests {
 
     #[test]
     fn failed_set_claim_releases_partial_claims() {
+        let _test_lock = serialize_claim_test();
         let dir = test_dir("atomic-set");
         let manager = LockManager::new(&dir);
         let blocking_claim = manager.claim_gpu(2).unwrap();
@@ -475,6 +487,7 @@ mod tests {
 
     #[test]
     fn claim_is_exclusive_across_processes_and_released_after_exit() {
+        let _test_lock = serialize_claim_test();
         let dir = test_dir("cross-process-exit");
         let (mut child, ready, release) = spawn_claim_helper(&dir);
         wait_until_ready(&mut child, &ready);
@@ -495,6 +508,7 @@ mod tests {
 
     #[test]
     fn claim_is_released_when_the_claiming_process_is_killed() {
+        let _test_lock = serialize_claim_test();
         let dir = test_dir("cross-process-kill");
         let (mut child, ready, _release) = spawn_claim_helper(&dir);
         wait_until_ready(&mut child, &ready);
