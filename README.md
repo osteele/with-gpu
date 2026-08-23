@@ -9,11 +9,13 @@
   <img src="docs/mascot.png" alt="with-gpu mascot" width="300" />
 </p>
 
-Intelligent GPU selection wrapper for CUDA commands. Automatically selects GPUs with the most available memory, then sets `CUDA_VISIBLE_DEVICES` and executes your command.
+Intelligent GPU selection wrapper for CUDA commands. It selects GPUs with the
+most available memory, sets `CUDA_VISIBLE_DEVICES` so compatible programs see
+only those GPUs, and then executes your command.
 
 ## Features
 
-- 🧠 **Memory-first selection**: Prioritizes GPUs with the most available VRAM
+- 🧠 **Memory-first selection**: Prioritizes GPUs with the most available GPU memory (VRAM)
 - 🎯 **Explicit idle filtering**: Includes non-idle GPUs unless `--require-idle` is set
 - 🖥️ **Multi-GPU support**: Request minimum and maximum number of GPUs
 - 🏷️ **GPU type filtering**: Prefer or require a GPU model by name
@@ -22,14 +24,31 @@ Intelligent GPU selection wrapper for CUDA commands. Automatically selects GPUs 
 - 📊 **Status display**: View model names and usage as text or JSON
 - ⚠️ **Warning messages**: Get notified when using non-idle GPUs
 - 🔒 **Cooperative claims**: Prevents concurrent `with-gpu` commands from selecting the same GPU
-- 🍎 **Cross-platform**: Works on Linux (with NVIDIA GPUs) and macOS (no-op mode)
+- 🍎 **Cross-platform**: Works on Linux and Windows, and on macOS in no-op mode
+
+## Requirements
+
+All platforms require Rust 1.85 or later and Cargo; the recommended installer is
+[rustup](https://rustup.rs/). Building from source also requires Git.
+
+**On Linux:**
+- NVIDIA GPU(s)
+- NVIDIA driver with the NVML library (`libnvidia-ml.so`)
+
+**On Windows:**
+- NVIDIA GPU(s)
+- NVIDIA driver with the NVML library (`nvml.dll`)
+
+**On macOS:**
+- NVIDIA GPU selection is unavailable
+- Commands execute normally without GPU selection, allowing the same command lines to work in cross-platform scripts
 
 ## Installation
 
 Install from [crates.io](https://crates.io/crates/with-gpu):
 
 ```bash
-cargo install with-gpu
+cargo install with-gpu --locked
 ```
 
 This installs `with-gpu` to `~/.cargo/bin/with-gpu` (ensure `~/.cargo/bin` is in your PATH).
@@ -42,6 +61,24 @@ cd with-gpu
 cargo install --path .
 ```
 
+### Verify the Installation
+
+Confirm that the binary is installed and on your `PATH`:
+
+```bash
+with-gpu --version
+```
+
+Then check platform behavior:
+
+```bash
+with-gpu --status
+```
+
+Linux and Windows report NVIDIA GPU state. macOS reports that no NVIDIA GPUs
+are available and that commands will run without GPU selection. An NVML error
+on Linux or Windows usually means the NVIDIA driver is missing or unavailable.
+
 ## Usage
 
 ### Basic Usage (Auto-select)
@@ -51,6 +88,10 @@ Select the GPU with most available memory:
 ```bash
 with-gpu python train.py
 ```
+
+Everything after `with-gpu` is your own command and its arguments. In this
+example, `python train.py` stands for an existing CUDA-aware training script;
+replace it with the workload you want to run.
 
 This prioritizes available VRAM over idle status. A used GPU with more free
 memory can rank ahead of an idle GPU.
@@ -124,7 +165,7 @@ Filter GPUs by available memory and utilization:
 # Require at least 8 GB free memory (default is 2 GB)
 with-gpu --min-memory 8000 python train.py
 
-# Allow any GPU with free memory (disable 2 GB default)
+# Disable the 2 GB free-memory floor
 with-gpu --min-memory 0 python small_inference.py
 
 # Require GPU utilization below 70%
@@ -198,9 +239,9 @@ In this example, auto-selection would pick GPU 1 (24 GB free), then GPU 2 (18 GB
 
 ## How It Works
 
-1. **Queries GPUs**: Uses NVML to get model names, utilization, and running
-   processes. Memory usage comes from the CUDA Driver API when available, with
-   NVML as a fallback.
+1. **Queries GPUs**: Uses the NVIDIA Management Library (NVML) to get model
+   names, utilization, and running processes. Memory usage comes from the CUDA
+   Driver API when available, with NVML as a fallback.
 2. **Threshold Filtering** (before selection):
    - Default: Requires 2 GB free memory (override with `--min-memory`)
    - Optional: Maximum utilization percentage (`--max-util`)
@@ -302,22 +343,6 @@ or `--wait` when external GPU activity is possible. See
 
 Designed for **cooperative environments** (small groups, personal workstations)
 where lightweight GPU selection is sufficient.
-
-## Requirements
-
-**On Linux:**
-- NVIDIA GPU(s)
-- NVIDIA driver with NVML library (libnvidia-ml.so)
-- Rust toolchain for building
-
-**On macOS:**
-- Rust toolchain for building
-- Commands execute normally without GPU selection. This is in order to use `with-gpu` in cross-platform scripts.
-
-**On Windows:**
-- NVIDIA GPU(s)
-- NVIDIA driver with NVML library (`nvml.dll`)
-- Rust toolchain for building
 
 ## Development
 
