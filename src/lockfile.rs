@@ -1,9 +1,9 @@
 //! GPU claim management for coordination between `with-gpu` processes.
 //!
-//! Each GPU has a persistent file in a shared temporary directory. On Unix, an
-//! advisory lock on that file is the claim; the PID stored inside is diagnostic
-//! metadata only. The lock file descriptor is inherited across `exec`, so the
-//! operating system releases the claim when the launched command exits.
+//! Each GPU has a persistent file in a shared temporary directory. The operating
+//! system lock on that file is the claim; the PID stored inside is diagnostic
+//! metadata only. The operating system releases the claim when the launched
+//! command exits, even if the process terminates unexpectedly.
 
 use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Seek, SeekFrom, Write};
@@ -13,11 +13,20 @@ use std::path::{Path, PathBuf};
 use std::os::fd::AsRawFd;
 #[cfg(unix)]
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+#[cfg(windows)]
+use std::os::windows::fs::OpenOptionsExt;
 
 #[cfg(unix)]
 const LOCK_DIR_MODE: u32 = 0o1777;
 #[cfg(unix)]
 const LOCK_FILE_MODE: u32 = 0o666;
+
+#[cfg(windows)]
+const ERROR_SHARING_VIOLATION: i32 = 32;
+#[cfg(windows)]
+const FILE_SHARE_READ: u32 = 0x0000_0001;
+#[cfg(windows)]
+const FILE_SHARE_WRITE: u32 = 0x0000_0002;
 
 #[derive(Debug, Clone)]
 pub struct LockManager {
@@ -212,28 +221,51 @@ fn inspect_claim(dir: &Path, gpu_index: usize) -> std::io::Result<Option<u32>> {
     }
 }
 
-#[cfg(not(unix))]
-fn is_pid_alive(_pid: u32) -> bool {
-    true
+#[cfg(windows)]
+fn is_sharing_violation(error: &std::io::Error) -> bool {
+    error.raw_os_error() == Some(ERROR_SHARING_VIOLATION)
 }
 
-#[cfg(not(unix))]
+#[cfg(windows)]
+fn open_windows_claim(path: &Path, create: bool) -> std::io::Result<File> {
+    OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(create)
+        // Permit diagnostic readers, but deny other writers atomically.
+        .share_mode(FILE_SHARE_READ)
+        .open(path)
+}
+
+#[cfg(windows)]
+fn read_windows_claim_pid(path: &Path) -> Option<u32> {
+    let mut file = OpenOptions::new()
+        .read(true)
+        // The active claim permits reads. This reader must in turn permit the
+        // claimant's existing read/write access.
+        .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE)
+        .open(path)
+        .ok()?;
+    read_pid(&mut file)
+}
+
+#[cfg(windows)]
 fn inspect_claim(dir: &Path, gpu_index: usize) -> std::io::Result<Option<u32>> {
     let path = lock_path(dir, gpu_index);
-    let mut file = match File::open(path) {
-        Ok(file) => file,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-        Err(error) => return Err(error),
-    };
-    Ok(read_pid(&mut file).filter(|pid| is_pid_alive(*pid)))
+    match open_windows_claim(&path, false) {
+        Ok(_) => Ok(None),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(error) if is_sharing_violation(&error) => {
+            Ok(Some(read_windows_claim_pid(&path).unwrap_or(0)))
+        }
+        Err(error) => Err(error),
+    }
 }
 
-/// A claim remains active while this value, or its inherited file descriptor,
-/// remains alive.
+/// A claim remains active while this value, or its inherited operating-system
+/// handle, remains alive.
 pub struct GpuClaim {
     _file: File,
-    #[cfg(not(unix))]
-    path: PathBuf,
 }
 
 fn claim_gpu_in(dir: &Path, gpu_index: usize) -> Result<GpuClaim, ClaimError> {
@@ -254,31 +286,21 @@ fn claim_gpu_in(dir: &Path, gpu_index: usize) -> Result<GpuClaim, ClaimError> {
         Ok(GpuClaim { _file: file })
     }
 
-    #[cfg(not(unix))]
+    #[cfg(windows)]
     {
-        if let Some(pid) = inspect_claim(dir, gpu_index).map_err(ClaimError::from_io)? {
-            return Err(ClaimError::AlreadyClaimed {
-                gpu_index,
-                pid: Some(pid),
-            });
-        }
-
         let path = lock_path(dir, gpu_index);
-        let mut file = OpenOptions::new()
-            .read(true)
-            .write(true)
-            .create_new(true)
-            .open(&path)
-            .map_err(ClaimError::from_io)?;
+        let mut file = match open_windows_claim(&path, true) {
+            Ok(file) => file,
+            Err(error) if is_sharing_violation(&error) => {
+                return Err(ClaimError::AlreadyClaimed {
+                    gpu_index,
+                    pid: read_windows_claim_pid(&path),
+                });
+            }
+            Err(error) => return Err(ClaimError::from_io(error)),
+        };
         write_pid(&mut file).map_err(ClaimError::from_io)?;
-        Ok(GpuClaim { _file: file, path })
-    }
-}
-
-#[cfg(not(unix))]
-impl Drop for GpuClaim {
-    fn drop(&mut self) {
-        let _ = fs::remove_file(&self.path);
+        Ok(GpuClaim { _file: file })
     }
 }
 
@@ -311,7 +333,7 @@ impl std::fmt::Display for ClaimError {
 
 impl std::error::Error for ClaimError {}
 
-#[cfg(all(test, unix))]
+#[cfg(test)]
 mod tests {
     use super::*;
     use std::time::{SystemTime, UNIX_EPOCH};
@@ -329,9 +351,12 @@ mod tests {
         let dir = test_dir("exclusive");
         let claim = claim_gpu_in(&dir, 0).unwrap();
 
-        let descriptor_flags = unsafe { libc::fcntl(claim._file.as_raw_fd(), libc::F_GETFD) };
-        assert_ne!(descriptor_flags, -1);
-        assert_eq!(descriptor_flags & libc::FD_CLOEXEC, 0);
+        #[cfg(unix)]
+        {
+            let descriptor_flags = unsafe { libc::fcntl(claim._file.as_raw_fd(), libc::F_GETFD) };
+            assert_ne!(descriptor_flags, -1);
+            assert_eq!(descriptor_flags & libc::FD_CLOEXEC, 0);
+        }
 
         assert_eq!(inspect_claim(&dir, 0).unwrap(), Some(std::process::id()));
         assert!(matches!(
@@ -344,6 +369,7 @@ mod tests {
         fs::remove_dir_all(dir).unwrap();
     }
 
+    #[cfg(unix)]
     #[test]
     fn shared_paths_have_multi_user_permissions() {
         let dir = test_dir("permissions");
@@ -357,6 +383,20 @@ mod tests {
             & 0o777;
         assert_eq!(dir_mode, LOCK_DIR_MODE);
         assert_eq!(file_mode, LOCK_FILE_MODE);
+
+        drop(claim);
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn stale_lock_file_can_be_reclaimed() {
+        let dir = test_dir("stale");
+        ensure_lock_dir(&dir).unwrap();
+        fs::write(lock_path(&dir, 4), "999999").unwrap();
+
+        assert_eq!(inspect_claim(&dir, 4).unwrap(), None);
+        let claim = claim_gpu_in(&dir, 4).unwrap();
+        assert_eq!(inspect_claim(&dir, 4).unwrap(), Some(std::process::id()));
 
         drop(claim);
         fs::remove_dir_all(dir).unwrap();

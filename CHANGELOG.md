@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- Windows support with CI coverage and crash-safe cooperative claims
+
+### Fixed
+- Preserve child exit codes and use the native temporary directory on Windows
+
 ## [0.5.0] - 2026-08-11
 
 ### Added

@@ -51,14 +51,16 @@ src/
    - `GpuProvider` separates selection/wait behavior from NVML discovery
    - Fixture providers exercise changing GPU state without NVIDIA hardware
 
-6. **Command execution**: Use `std::process::Command::exec()` to replace current process
+6. **Command execution**: Replace the current process on Unix; wait for the child on Windows
    - Preserves stdin/stdout/stderr
    - Sets `CUDA_VISIBLE_DEVICES` environment variable
+   - Preserves the child process's exit code
    - Command receives full control of terminal
 
 7. **Cross-platform support**:
    - **Linux**: Full functionality with NVML queries
    - **macOS**: No-op mode (executes command without GPU selection)
+   - **Windows**: Full functionality with NVML queries and handle-based claims
    - Uses conditional compilation (`#[cfg(target_os = "macos")]`) to handle platform differences
    - `nvml-wrapper` dependency only compiled on non-macOS platforms
 
@@ -108,11 +110,11 @@ exclusion and permissions, and wait timeout calculations. Run them with:
 cargo test
 ```
 
-CI runs formatting, Clippy, and tests on Linux and macOS, checks the declared
-Rust 1.85 minimum, audits dependencies, and keeps Cargo and GitHub Actions
-dependencies current through Dependabot. NVML and CUDA integration requires
-NVIDIA hardware; the manual `GPU smoke test` workflow targets a self-hosted
-runner labeled `linux` and `gpu`.
+CI runs formatting, Clippy, and tests on Linux, macOS, and Windows, checks the
+declared Rust 1.85 minimum, audits dependencies, and keeps Cargo and GitHub
+Actions dependencies current through Dependabot. NVML and CUDA integration
+requires NVIDIA hardware; the manual `GPU smoke test` workflow targets a
+self-hosted runner labeled `linux` and `gpu`.
 
 **Testing Approach:**
 

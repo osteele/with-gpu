@@ -6,15 +6,16 @@ This document describes the limitations of `with-gpu` in detail. For a quick ove
 
 ### Cooperative Claims
 
-Concurrent `with-gpu` processes coordinate through advisory locks in
-`/tmp/with-gpu`. A claim is acquired before the command starts, inherited across
-process replacement, and released by the operating system when the command exits.
-This prevents two cooperating commands from claiming the same GPU, including
-during application startup before CUDA memory is allocated.
+Concurrent `with-gpu` processes coordinate through operating-system locks on
+files in a shared temporary directory. A claim is acquired before the command
+starts and released by the operating system when the command exits, including
+after an unexpected termination. This prevents two cooperating commands from
+claiming the same GPU, including during application startup before CUDA memory
+is allocated.
 
-Claims are local to one host and its shared `/tmp` namespace. They do not provide
-distributed coordination across machines or containers with isolated temporary
-filesystems.
+Claims are local to one host and its shared temporary-directory namespace. They
+do not provide distributed coordination across machines or containers with
+isolated temporary filesystems.
 
 ### Programs Outside `with-gpu`
 

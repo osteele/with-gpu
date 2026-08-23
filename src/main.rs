@@ -28,6 +28,18 @@ fn parse_positive_usize(value: &str) -> std::result::Result<usize, String> {
     }
 }
 
+fn default_lock_dir() -> PathBuf {
+    #[cfg(windows)]
+    {
+        std::env::temp_dir().join("with-gpu")
+    }
+
+    #[cfg(not(windows))]
+    {
+        PathBuf::from("/tmp/with-gpu")
+    }
+}
+
 #[derive(Parser, Debug)]
 #[command(
     name = "with-gpu",
@@ -106,7 +118,7 @@ struct Cli {
     #[arg(
         long,
         env = "WITH_GPU_LOCK_DIR",
-        default_value = "/tmp/with-gpu",
+        default_value_os_t = default_lock_dir(),
         value_name = "PATH",
         help = "Shared directory used for cooperative GPU claims"
     )]
@@ -471,7 +483,7 @@ fn execute_command(command_parts: &[String], selection: &GpuSelection) -> Result
             .context(format!("Failed to execute command: {}", program))?;
 
         if !status.success() {
-            anyhow::bail!("Command exited with status: {}", status);
+            std::process::exit(status.code().unwrap_or(1));
         }
         Ok(())
     }

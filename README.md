@@ -168,11 +168,12 @@ process wins a claim race, a waiting process retries instead of failing.
 
 ### Cooperative Claim Directory
 
-Claims use `/tmp/with-gpu` by default. Set `--lock-dir PATH` or the
-`WITH_GPU_LOCK_DIR` environment variable when containers or users need a
-different shared namespace. The directory is created with mode `1777`; if an
-older directory cannot be migrated to those permissions, the error recommends
-using a new lock directory.
+Claims use `/tmp/with-gpu` by default on Unix and the operating system's
+temporary directory on Windows. Set `--lock-dir PATH` or the `WITH_GPU_LOCK_DIR`
+environment variable when containers or users need a different shared
+namespace. On Unix, the directory is created with mode `1777`; if an older
+directory cannot be migrated to those permissions, the error recommends using a
+new lock directory.
 
 ### Check GPU Status
 
@@ -212,7 +213,8 @@ In this example, auto-selection would pick GPU 1 (24 GB free), then GPU 2 (18 GB
    - `--require-idle`: Only considers GPUs with 0 processes and <500 MB total memory used (still sorted by available memory)
    - Manual `--gpu`: Preserves the exact requested IDs and order while applying filters
 5. **Warnings**: Notifies when using non-idle GPUs or GPUs with <2 GB free
-6. **Execution**: Sets `CUDA_VISIBLE_DEVICES` and replaces current process with your command
+6. **Execution**: Sets `CUDA_VISIBLE_DEVICES`, then replaces the current process
+   on Unix or waits for the child process and preserves its exit code on Windows
 
 Memory-first ranking favors available capacity. A GPU with 10 GB free and 1
 process can rank ahead of an idle GPU with less free memory. By default, GPUs
@@ -278,7 +280,7 @@ Fills the gap between simple utilities and full schedulers:
 - ✅ Multi-GPU min/max support
 - ✅ Lightweight (single Rust binary)
 - ✅ Direct NVML queries (reliable, not parsing nvidia-smi)
-- ✅ Cross-platform (Linux + macOS)
+- ✅ Cross-platform (Linux + macOS + Windows)
 
 **Best for**: Individual workstations, small research groups, "just run this on the GPU with most free memory" workflows.
 
@@ -311,6 +313,11 @@ where lightweight GPU selection is sufficient.
 **On macOS:**
 - Rust toolchain for building
 - Commands execute normally without GPU selection. This is in order to use `with-gpu` in cross-platform scripts.
+
+**On Windows:**
+- NVIDIA GPU(s)
+- NVIDIA driver with NVML library (`nvml.dll`)
+- Rust toolchain for building
 
 ## Development
 
