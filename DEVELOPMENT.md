@@ -103,8 +103,10 @@ cargo fmt --check && cargo clippy -- -D warnings && cargo check
 
 ### Current State
 
-The automated tests cover shared GPU state, manual selection behavior, lock
-exclusion and permissions, and wait timeout calculations. Run them with:
+The automated tests cover shared GPU state, generated selection cases, the
+public CLI and JSON contracts, cross-process claim recovery, manual selection
+behavior, lock exclusion and permissions, and wait timeout calculations. Run
+them with:
 
 ```bash
 cargo test
@@ -114,7 +116,9 @@ CI runs formatting, Clippy, and tests on Linux, macOS, and Windows, checks the
 declared Rust 1.85 minimum, audits dependencies, and keeps Cargo and GitHub
 Actions dependencies current through Dependabot. NVML and CUDA integration
 requires NVIDIA hardware; the manual `GPU smoke test` workflow targets a
-self-hosted runner labeled `linux` and `gpu`.
+self-hosted runner labeled `linux` and `gpu`. It queries real GPU state, runs a
+command with a selected device, checks `CUDA_VISIBLE_DEVICES`, verifies claim
+contention and release, and checks child exit-code propagation.
 
 **Testing Approach:**
 
@@ -126,7 +130,6 @@ self-hosted runner labeled `linux` and `gpu`.
 
 **Future Improvements:**
 - Run the GPU smoke workflow on a maintained self-hosted runner
-- Add property-based tests for selection algorithms
 
 ### Local Testing (macOS)
 

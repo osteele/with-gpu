@@ -13,5 +13,69 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - run: cargo test --all-targets --locked
+      - run: cargo build --locked
       - name: Query real GPU state
-        run: cargo run --locked -- --status
+        run: |
+          ./target/debug/with-gpu --status
+          ./target/debug/with-gpu --status --json
+      - name: Select, execute, and preserve claims and status
+        shell: bash
+        run: |
+          set -euo pipefail
+          with_gpu_bin=./target/debug/with-gpu
+          smoke_dir="$(mktemp -d)"
+          selected_gpu_file="$smoke_dir/selected-gpu"
+          holder_pid=""
+
+          cleanup() {
+            if [[ -n "$holder_pid" ]]; then
+              kill "$holder_pid" 2>/dev/null || true
+              wait "$holder_pid" 2>/dev/null || true
+            fi
+            rm -rf "$smoke_dir"
+          }
+          trap cleanup EXIT
+
+          # shellcheck disable=SC2016
+          "$with_gpu_bin" \
+            --lock-dir "$smoke_dir/claims" \
+            --min-memory 0 \
+            -- sh -c 'printf %s "$CUDA_VISIBLE_DEVICES" > "$1"; sleep 3' \
+            sh "$selected_gpu_file" &
+          holder_pid=$!
+
+          for _ in {1..50}; do
+            [[ -s "$selected_gpu_file" ]] && break
+            kill -0 "$holder_pid" 2>/dev/null || break
+            sleep 0.1
+          done
+          [[ -s "$selected_gpu_file" ]]
+          selected_gpu="$(<"$selected_gpu_file")"
+
+          if "$with_gpu_bin" \
+            --lock-dir "$smoke_dir/claims" \
+            --gpu "$selected_gpu" \
+            --min-memory 0 \
+            -- sh -c 'exit 0'; then
+            echo "a second process unexpectedly acquired GPU $selected_gpu" >&2
+            exit 1
+          fi
+
+          wait "$holder_pid"
+          holder_pid=""
+          # shellcheck disable=SC2016
+          "$with_gpu_bin" \
+            --lock-dir "$smoke_dir/claims" \
+            --gpu "$selected_gpu" \
+            --min-memory 0 \
+            -- sh -c 'test "$CUDA_VISIBLE_DEVICES" = "$1"' sh "$selected_gpu"
+
+          set +e
+          "$with_gpu_bin" \
+            --lock-dir "$smoke_dir/claims" \
+            --gpu "$selected_gpu" \
+            --min-memory 0 \
+            -- sh -c 'exit 23'
+          child_status=$?
+          set -e
+          [[ "$child_status" -eq 23 ]]

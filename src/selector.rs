@@ -42,28 +42,31 @@ pub fn select_gpus(
             .iter()
             .filter(|gpu| gpu.matches_type(pattern))
             .collect::<Vec<_>>();
-        if matching.is_empty() && criteria.require_type_match {
-            anyhow::bail!(
-                "No GPUs found matching type '{}' (use --status to see available GPUs)",
-                pattern
-            );
-        }
-        if !matching.is_empty() {
-            match select_from_candidates(&matching, criteria, locks) {
-                Ok(selection) => return Ok(selection),
-                Err(error) if criteria.require_type_match => return Err(error),
-                Err(_) => {}
+        if criteria.require_type_match {
+            if matching.is_empty() {
+                anyhow::bail!(
+                    "No GPUs found matching type '{}' (use --status to see available GPUs)",
+                    pattern
+                );
             }
+            return select_from_candidates(&matching, criteria, locks, None);
         }
+        return select_from_candidates(
+            &gpus.iter().collect::<Vec<_>>(),
+            criteria,
+            locks,
+            Some(pattern),
+        );
     }
 
-    select_from_candidates(&gpus.iter().collect::<Vec<_>>(), criteria, locks)
+    select_from_candidates(&gpus.iter().collect::<Vec<_>>(), criteria, locks, None)
 }
 
 fn select_from_candidates(
     candidate_gpus: &[&GpuInfo],
     criteria: &SelectionCriteria,
     locks: &LockManager,
+    preferred_type: Option<&str>,
 ) -> Result<GpuSelection> {
     // Apply threshold filters and exclude claimed GPUs
     let filtered_gpus: Vec<&GpuInfo> = candidate_gpus
@@ -138,7 +141,7 @@ fn select_from_candidates(
             );
         }
         // Sort idle GPUs by available memory (most free first)
-        let sorted_idle = sort_by_most_free_refs(&idle_gpus);
+        let sorted_idle = sort_by_most_free_refs(&idle_gpus, preferred_type);
         let count = criteria.max_gpus.min(sorted_idle.len());
         let selected: Vec<usize> = sorted_idle.iter().take(count).map(|g| g.index).collect();
 
@@ -151,7 +154,7 @@ fn select_from_candidates(
 
     // Sort filtered GPUs by available memory (most free first)
     // This prioritizes available memory over idle status
-    let all_gpus_sorted = sort_by_most_free_refs(&filtered_gpus);
+    let all_gpus_sorted = sort_by_most_free_refs(&filtered_gpus, preferred_type);
 
     // Select the requested number of GPUs
     let count = criteria.max_gpus.min(all_gpus_sorted.len());
@@ -316,16 +319,24 @@ fn partition_gpus_refs<'a>(gpus: &[&'a GpuInfo]) -> (Vec<&'a GpuInfo>, Vec<&'a G
     (idle, used)
 }
 
-fn sort_by_most_free_refs<'a>(gpus: &[&'a GpuInfo]) -> Vec<&'a GpuInfo> {
+fn sort_by_most_free_refs<'a>(
+    gpus: &[&'a GpuInfo],
+    preferred_type: Option<&str>,
+) -> Vec<&'a GpuInfo> {
     let mut sorted = gpus.to_vec();
     sorted.sort_by(|a, b| {
-        // Primary: Most free memory (descending)
-        b.memory_free_mb()
-            .cmp(&a.memory_free_mb())
-            // Secondary: Fewest processes (ascending)
-            .then_with(|| a.process_count.cmp(&b.process_count))
-            // Tertiary: Lowest index (ascending)
-            .then_with(|| a.index.cmp(&b.index))
+        let a_is_preferred = preferred_type.is_some_and(|pattern| a.matches_type(pattern));
+        let b_is_preferred = preferred_type.is_some_and(|pattern| b.matches_type(pattern));
+
+        // Preferred models form the first group, then each group is memory-first.
+        b_is_preferred.cmp(&a_is_preferred).then_with(|| {
+            b.memory_free_mb()
+                .cmp(&a.memory_free_mb())
+                // Secondary: Fewest processes (ascending)
+                .then_with(|| a.process_count.cmp(&b.process_count))
+                // Tertiary: Lowest index (ascending)
+                .then_with(|| a.index.cmp(&b.index))
+        })
     });
     sorted
 }
@@ -430,5 +441,117 @@ mod tests {
             .unwrap_err();
 
         assert!(error.to_string().contains("below the required 2048 MB"));
+    }
+
+    #[test]
+    fn automatic_selection_is_invariant_to_discovery_order() {
+        let gpus = [
+            make_gpu(10_010, 10_000),
+            make_gpu(10_011, 0),
+            make_gpu(10_012, 500),
+        ];
+        let permutations = [
+            [0, 1, 2],
+            [0, 2, 1],
+            [1, 0, 2],
+            [1, 2, 0],
+            [2, 0, 1],
+            [2, 1, 0],
+        ];
+        let criteria = SelectionCriteria {
+            min_gpus: 3,
+            max_gpus: 3,
+            min_memory_mb: Some(0),
+            ..SelectionCriteria::default()
+        };
+
+        for permutation in permutations {
+            let discovered = permutation.map(|index| gpus[index].clone());
+            let selection = select_gpus(&discovered, &criteria, &locks()).unwrap();
+            assert_eq!(selection.gpu_indices, vec![10_011, 10_012, 10_010]);
+        }
+    }
+
+    #[test]
+    fn generated_min_max_ranges_select_every_available_gpu_up_to_max() {
+        for available in 1..=4 {
+            let gpus = (0..available)
+                .map(|offset| make_gpu(10_100 + offset, offset as u64 * 100))
+                .collect::<Vec<_>>();
+            for min_gpus in 1..=4 {
+                for max_gpus in min_gpus..=4 {
+                    let criteria = SelectionCriteria {
+                        min_gpus,
+                        max_gpus,
+                        min_memory_mb: Some(0),
+                        ..SelectionCriteria::default()
+                    };
+                    let result = select_gpus(&gpus, &criteria, &locks());
+
+                    if available < min_gpus {
+                        assert!(result.is_err());
+                    } else {
+                        assert_eq!(result.unwrap().gpu_indices.len(), available.min(max_gpus));
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn threshold_boundaries_are_inclusive() {
+        let mut gpu = make_gpu(10_200, 20_000);
+        gpu.utilization_percent = 70;
+        gpu.hidden_usage_mb = HIDDEN_USAGE_THRESHOLD_MB;
+        let criteria = SelectionCriteria {
+            min_memory_mb: Some(4_000),
+            max_utilization: Some(70),
+            ..SelectionCriteria::default()
+        };
+        assert!(select_gpus(&[gpu.clone()], &criteria, &locks()).is_ok());
+
+        let cases = [
+            {
+                let mut candidate = gpu.clone();
+                candidate.memory_used_mb += 1;
+                candidate
+            },
+            {
+                let mut candidate = gpu.clone();
+                candidate.utilization_percent += 1;
+                candidate
+            },
+            {
+                let mut candidate = gpu;
+                candidate.hidden_usage_mb += 1;
+                candidate
+            },
+        ];
+        for candidate in cases {
+            assert!(select_gpus(&[candidate], &criteria, &locks()).is_err());
+        }
+    }
+
+    #[test]
+    fn preferred_type_fills_remaining_slots_with_fallbacks() {
+        let mut preferred = make_gpu(10_300, 10_000);
+        preferred.name = "RTX 4090".to_string();
+        let fallbacks = [make_gpu(10_301, 0), make_gpu(10_302, 1_000)];
+        let criteria = SelectionCriteria {
+            min_gpus: 1,
+            max_gpus: 3,
+            min_memory_mb: Some(0),
+            gpu_type_pattern: Some("4090".to_string()),
+            ..SelectionCriteria::default()
+        };
+
+        let selection = select_gpus(
+            &[preferred, fallbacks[0].clone(), fallbacks[1].clone()],
+            &criteria,
+            &locks(),
+        )
+        .unwrap();
+
+        assert_eq!(selection.gpu_indices, vec![10_300, 10_301, 10_302]);
     }
 }

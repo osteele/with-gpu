@@ -11,6 +11,8 @@ use serde::Serialize;
 use std::os::unix::process::CommandExt;
 use std::path::PathBuf;
 use std::process::Command;
+#[cfg(not(unix))]
+use std::process::ExitStatus;
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -150,6 +152,10 @@ fn main() -> Result<()> {
         }
     }
 
+    if !cli.status && cli.command.is_empty() {
+        anyhow::bail!("No command specified (use --help for usage)");
+    }
+
     let provider = nvidia::NvidiaProvider;
     let locks = lockfile::LockManager::new(&cli.lock_dir);
     let gpus = provider.query_gpus()?;
@@ -157,10 +163,6 @@ fn main() -> Result<()> {
     if cli.status {
         print_status(&gpus, cli.json, &locks)?;
         return Ok(());
-    }
-
-    if cli.command.is_empty() {
-        anyhow::bail!("No command specified (use --help for usage)");
     }
 
     // On macOS, skip GPU selection entirely and just execute the command
@@ -372,20 +374,7 @@ fn print_status(gpus: &[GpuInfo], json: bool, locks: &lockfile::LockManager) -> 
     let claimed_gpus = locks.get_claimed_gpus();
 
     if json {
-        let statuses = gpus
-            .iter()
-            .map(|gpu| GpuStatus {
-                gpu,
-                is_idle: gpu.is_idle(),
-                memory_free_mb: gpu.memory_free_mb(),
-                memory_usage_percent: gpu.memory_usage_percent(),
-                claimed_by_pid: claimed_gpus
-                    .iter()
-                    .find(|(index, _)| *index == gpu.index)
-                    .map(|(_, pid)| *pid),
-            })
-            .collect::<Vec<_>>();
-        println!("{}", serde_json::to_string_pretty(&statuses)?);
+        println!("{}", status_json(gpus, &claimed_gpus)?);
         return Ok(());
     }
 
@@ -427,6 +416,23 @@ fn print_status(gpus: &[GpuInfo], json: bool, locks: &lockfile::LockManager) -> 
         );
     }
     Ok(())
+}
+
+fn status_json(gpus: &[GpuInfo], claimed_gpus: &[(usize, u32)]) -> Result<String> {
+    let statuses = gpus
+        .iter()
+        .map(|gpu| GpuStatus {
+            gpu,
+            is_idle: gpu.is_idle(),
+            memory_free_mb: gpu.memory_free_mb(),
+            memory_usage_percent: gpu.memory_usage_percent(),
+            claimed_by_pid: claimed_gpus
+                .iter()
+                .find(|(index, _)| *index == gpu.index)
+                .map(|(_, pid)| *pid),
+        })
+        .collect::<Vec<_>>();
+    serde_json::to_string_pretty(&statuses).context("Failed to serialize GPU status")
 }
 
 fn print_selection(gpus: &[GpuInfo], selection: &GpuSelection) {
@@ -483,10 +489,15 @@ fn execute_command(command_parts: &[String], selection: &GpuSelection) -> Result
             .context(format!("Failed to execute command: {}", program))?;
 
         if !status.success() {
-            std::process::exit(status.code().unwrap_or(1));
+            std::process::exit(status_exit_code(status));
         }
         Ok(())
     }
+}
+
+#[cfg(not(unix))]
+fn status_exit_code(status: ExitStatus) -> i32 {
+    status.code().unwrap_or(1)
 }
 
 #[cfg(target_os = "macos")]
@@ -507,7 +518,7 @@ fn execute_command_without_gpus(command_parts: &[String]) -> Result<()> {
 mod tests {
     use super::*;
     use std::cell::RefCell;
-    use std::collections::VecDeque;
+    use std::collections::{BTreeSet, VecDeque};
 
     struct FixtureProvider {
         states: RefCell<VecDeque<Vec<GpuInfo>>>,
@@ -576,5 +587,56 @@ mod tests {
         assert_eq!(selection.gpu_indices, vec![0]);
         drop(claims);
         std::fs::remove_dir_all(lock_dir).unwrap();
+    }
+
+    #[test]
+    fn status_json_has_a_stable_scriptable_schema() {
+        let gpu = GpuInfo {
+            index: 7,
+            name: "Fixture RTX".to_string(),
+            memory_used_mb: 6_000,
+            memory_total_mb: 24_000,
+            utilization_percent: 25,
+            process_count: 2,
+            hidden_usage_mb: 128,
+        };
+        let value: serde_json::Value =
+            serde_json::from_str(&status_json(&[gpu], &[(7, 42)]).unwrap()).unwrap();
+        let status = value[0].as_object().unwrap();
+        let keys = status.keys().map(String::as_str).collect::<BTreeSet<_>>();
+
+        assert_eq!(
+            keys,
+            BTreeSet::from([
+                "claimed_by_pid",
+                "hidden_usage_mb",
+                "index",
+                "is_idle",
+                "memory_free_mb",
+                "memory_total_mb",
+                "memory_usage_percent",
+                "memory_used_mb",
+                "name",
+                "process_count",
+                "utilization_percent",
+            ])
+        );
+        assert_eq!(status["index"], 7);
+        assert_eq!(status["name"], "Fixture RTX");
+        assert_eq!(status["memory_free_mb"], 18_000);
+        assert_eq!(status["memory_usage_percent"], 25.0);
+        assert_eq!(status["is_idle"], false);
+        assert_eq!(status["claimed_by_pid"], 42);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_status_exit_code_preserves_values_above_255() {
+        let status = Command::new("cmd")
+            .args(["/C", "exit /b 300"])
+            .status()
+            .unwrap();
+
+        assert_eq!(status_exit_code(status), 300);
     }
 }

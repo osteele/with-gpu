@@ -336,7 +336,12 @@ impl std::error::Error for ClaimError {}
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::time::{SystemTime, UNIX_EPOCH};
+    use std::process::{Child, Command};
+    use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+
+    const HELPER_DIR_ENV: &str = "WITH_GPU_TEST_HELPER_DIR";
+    const HELPER_READY_ENV: &str = "WITH_GPU_TEST_HELPER_READY";
+    const HELPER_RELEASE_ENV: &str = "WITH_GPU_TEST_HELPER_RELEASE";
 
     fn test_dir(name: &str) -> PathBuf {
         let nonce = SystemTime::now()
@@ -344,6 +349,56 @@ mod tests {
             .unwrap()
             .as_nanos();
         std::env::temp_dir().join(format!("with-gpu-{name}-{}-{nonce}", std::process::id()))
+    }
+
+    fn spawn_claim_helper(dir: &Path) -> (Child, PathBuf, PathBuf) {
+        let ready = dir.join("helper-ready");
+        let release = dir.join("helper-release");
+        let child = Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--ignored",
+                "--exact",
+                "lockfile::tests::cross_process_claim_helper",
+            ])
+            .env(HELPER_DIR_ENV, dir)
+            .env(HELPER_READY_ENV, &ready)
+            .env(HELPER_RELEASE_ENV, &release)
+            .spawn()
+            .unwrap();
+        (child, ready, release)
+    }
+
+    fn wait_until_ready(child: &mut Child, ready: &Path) {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !ready.exists() && Instant::now() < deadline {
+            if let Some(status) = child.try_wait().unwrap() {
+                panic!("claim helper exited before becoming ready: {status}");
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        if !ready.exists() {
+            let _ = child.kill();
+            let _ = child.wait();
+            panic!("claim helper did not become ready within five seconds");
+        }
+    }
+
+    #[test]
+    #[ignore]
+    fn cross_process_claim_helper() {
+        let Some(dir) = std::env::var_os(HELPER_DIR_ENV).map(PathBuf::from) else {
+            return;
+        };
+        let ready = PathBuf::from(std::env::var_os(HELPER_READY_ENV).unwrap());
+        let release = PathBuf::from(std::env::var_os(HELPER_RELEASE_ENV).unwrap());
+        let _claim = claim_gpu_in(&dir, 0).unwrap();
+        fs::write(ready, "ready").unwrap();
+
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while !release.exists() && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert!(release.exists(), "claim helper timed out awaiting release");
     }
 
     #[test]
@@ -415,6 +470,44 @@ mod tests {
         assert!(manager.is_gpu_available(1));
 
         drop(blocking_claim);
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn claim_is_exclusive_across_processes_and_released_after_exit() {
+        let dir = test_dir("cross-process-exit");
+        let (mut child, ready, release) = spawn_claim_helper(&dir);
+        wait_until_ready(&mut child, &ready);
+
+        assert_eq!(inspect_claim(&dir, 0).unwrap(), Some(child.id()));
+        assert!(matches!(
+            claim_gpu_in(&dir, 0),
+            Err(ClaimError::AlreadyClaimed { .. })
+        ));
+
+        fs::write(release, "release").unwrap();
+        assert!(child.wait().unwrap().success());
+        let claim = claim_gpu_in(&dir, 0).unwrap();
+
+        drop(claim);
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn claim_is_released_when_the_claiming_process_is_killed() {
+        let dir = test_dir("cross-process-kill");
+        let (mut child, ready, _release) = spawn_claim_helper(&dir);
+        wait_until_ready(&mut child, &ready);
+
+        assert!(matches!(
+            claim_gpu_in(&dir, 0),
+            Err(ClaimError::AlreadyClaimed { .. })
+        ));
+        child.kill().unwrap();
+        child.wait().unwrap();
+        let claim = claim_gpu_in(&dir, 0).unwrap();
+
+        drop(claim);
         fs::remove_dir_all(dir).unwrap();
     }
 }
