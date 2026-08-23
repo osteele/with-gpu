@@ -258,6 +258,8 @@ Works with any command that respects `CUDA_VISIBLE_DEVICES`:
 
 ## Related Tools
 
+**[`with-limits`](https://github.com/osteele/with-limits)** - Runs a command with portable process-tree limits on host memory, sustained CPU use, and wall-clock runtime. It can be combined with `with-gpu` when a workload needs both GPU selection and host resource containment.
+
 **[`cuda-selector`](https://github.com/SamerMakni/cuda-selector)** - Python library for in-process GPU selection. Supports memory, power, temperature, and utilization criteria with custom ranking functions. For Python-only workflows where you want device selection within your script rather than as a CLI wrapper.
 
 **`idlegpu`** - Simple shell utility returning idle GPU ID. No multi-GPU, fallback, or wait support.
@@ -322,10 +324,10 @@ See [DESIGN.md](DESIGN.md) for design rationale and architectural decisions.
 
 See [ROADMAP.md](ROADMAP.md) for planned features and future directions.
 
-## License
-
-MIT
-
 ## Author
 
 Oliver Steele <steele@osteele.com>
+
+## License
+
+Licensed under the [MIT License](LICENSE).
