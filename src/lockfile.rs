@@ -14,7 +14,9 @@ use std::os::fd::AsRawFd;
 #[cfg(unix)]
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 
+#[cfg(unix)]
 const LOCK_DIR_MODE: u32 = 0o1777;
+#[cfg(unix)]
 const LOCK_FILE_MODE: u32 = 0o666;
 
 #[derive(Debug, Clone)]
@@ -112,6 +114,7 @@ fn ensure_lock_dir(dir: &Path) -> std::io::Result<()> {
     Ok(())
 }
 
+#[cfg(unix)]
 fn open_lock_file(dir: &Path, gpu_index: usize) -> std::io::Result<File> {
     let path = lock_path(dir, gpu_index);
     let mut options = OpenOptions::new();

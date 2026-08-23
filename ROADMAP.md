@@ -122,12 +122,6 @@ These features are explicitly **not** planned:
 - **Why**: NVIDIA MIG is enterprise feature, limited hardware support
 - **Alternative**: Use nvidia-smi or data center tools for MIG management
 
-### Windows Support
-- **Why**: Different NVML behavior, less common for research workloads
-- **Alternative**: Use WSL2 with Linux `with-gpu`
-
----
-
 ## Contribution Guidelines
 
 If you'd like to implement any roadmap feature:
