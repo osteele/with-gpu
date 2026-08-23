@@ -7,11 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-08-23
+
 ### Added
 - Windows support with CI coverage and crash-safe cooperative claims
 
 ### Fixed
 - Preserve child exit codes and use the native temporary directory on Windows
+- Fill remaining multi-GPU slots after honoring a preferred GPU model
+- Report a clear error when no command is supplied
 
 ## [0.5.0] - 2026-08-11
 
@@ -109,7 +113,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - NVML-based GPU querying for reliability
 - Process replacement via `exec()` to preserve stdio
 
-[Unreleased]: https://github.com/osteele/with-gpu/compare/v0.5.0...HEAD
+[Unreleased]: https://github.com/osteele/with-gpu/compare/v0.6.0...HEAD
+[0.6.0]: https://github.com/osteele/with-gpu/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/osteele/with-gpu/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/osteele/with-gpu/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/osteele/with-gpu/compare/v0.2.0...v0.3.0
